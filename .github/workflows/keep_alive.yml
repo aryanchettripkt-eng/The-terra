@@ -1,0 +1,42 @@
+name: Render Backend Keep-Alive
+
+on:
+  schedule:
+    # Runs every 10 minutes to prevent Render free instance from spinning down (inactivity threshold is 15 minutes)
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    name: Ping Render API
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Keep-Alive Ping
+        run: |
+          API_URL="${{ secrets.SETU_API_URL || 'https://the-dead-zone.onrender.com' }}"
+          ENDPOINT="$API_URL/health"
+
+          echo "Pinging $ENDPOINT at $(date -u '+%Y-%m-%d %H:%M:%S UTC')..."
+
+          # max-time 120s accommodates cold start boot times if service was asleep
+          HTTP_RESPONSE=$(curl -sS -w "\nHTTP_STATUS:%{http_code}\nTIME_TOTAL:%{time_total}s" \
+            --max-time 120 \
+            --retry 3 \
+            --retry-delay 5 \
+            -X GET "$ENDPOINT" \
+            -H "User-Agent: GitHub-Actions-KeepAlive/1.0")
+
+          BODY=$(echo "$HTTP_RESPONSE" | sed -e '/HTTP_STATUS:/,$d')
+          HTTP_STATUS=$(echo "$HTTP_RESPONSE" | grep "HTTP_STATUS:" | cut -d':' -f2)
+          TIME_TOTAL=$(echo "$HTTP_RESPONSE" | grep "TIME_TOTAL:" | cut -d':' -f2)
+
+          echo "Response Time: $TIME_TOTAL"
+          echo "HTTP Status: $HTTP_STATUS"
+          echo "Payload: $BODY"
+
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "::error::Health check failed with status $HTTP_STATUS"
+            exit 1
+          fi
+
+          echo "Backend is alive and responsive."
