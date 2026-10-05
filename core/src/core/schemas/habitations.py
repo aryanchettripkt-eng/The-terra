@@ -7,7 +7,7 @@ Section refs: docs/PRD1.md §6.6, §6.7, §14.1
 from typing import Optional, List, Dict, Any
 from datetime import date, datetime
 from pydantic import Field
-from core.enums import Tier
+from core.enums import HazardRegime, RelocationPathway, Tier
 from core.schemas.common import BaseSchema, SCREENING_GRADE_NOTICE
 from core.schemas.explanation import FeatureContributionDTO
 
@@ -49,6 +49,12 @@ class HabitationListItem(BaseSchema):
     tier: Optional[Tier] = Field(default=None, description="Four-tier triage category (None if unclassified/monitoring).")
     prz_overlap_pct: float = Field(ge=0.0, le=100.0, description="Percentage of built area inside PRZ.")
     dominant_hazard: str = "landslide"
+    hazard_regime: Optional[HazardRegime] = Field(
+        default=None, description="Flood hazard regime of the habitation's cell (None when the district has no regime layer)."
+    )
+    relocation_pathway: Optional[RelocationPathway] = Field(
+        default=None, description="mainland_resettlement (char belt), in_situ_or_nearby (floodplain) or not_applicable."
+    )
     centroid: list[float] = Field(description="[longitude, latitude]")
     model_version: str = "baseline-v1"
     scoring_version: str = "priority-v1.0"
@@ -75,6 +81,8 @@ class HabitationRiskDossier(BaseSchema):
     prz_overlap_pct: float
     hazard_intensity: float
     decayed_loss_score: float
+    hazard_regime: Optional[HazardRegime] = None
+    relocation_pathway: Optional[RelocationPathway] = None
 
     # Provenance & Quality
     model_version: str = "baseline-v1"

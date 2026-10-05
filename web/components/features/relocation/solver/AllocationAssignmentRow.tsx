@@ -5,8 +5,10 @@ import { useGSAP } from '@gsap/react';
 import gsap from 'gsap';
 
 import { M3_DURATION, M3_EASE } from '@/lib/motion/m3';
+import { RegimeChip } from '@/components/common/RegimeChip';
 import { usePrefersReducedMotion } from '@/lib/hooks/usePrefersReducedMotion';
 import type { AllocationAssignment } from '@/lib/api/types';
+import { PATHWAY_LABELS } from '@/lib/map/constants';
 
 import { TierBadge } from '../TierBadge';
 
@@ -107,6 +109,9 @@ export const AllocationAssignmentRow = ({
         <span className={['min-w-0 flex-1 truncate text-[12px] font-semibold text-ink', classNames.origin ?? ''].join(' ')}>
           {assignment.habitation_name}
         </span>
+        {assignment.habitation_regime ? (
+          <RegimeChip regime={assignment.habitation_regime} showLabel={false} />
+        ) : null}
         <TierBadge tier={assignment.tier} />
       </div>
 
@@ -115,6 +120,11 @@ export const AllocationAssignmentRow = ({
         <span className={['truncate font-medium text-ink', classNames.destination ?? ''].join(' ')}>
           Site {assignment.site_id}
         </span>
+        {assignment.relocation_pathway === 'mainland_resettlement' ? (
+          <span className="truncate text-amber-700 dark:text-amber-400" title={PATHWAY_LABELS.mainland_resettlement}>
+            · mainland
+          </span>
+        ) : null}
         <span aria-hidden>·</span>
         <span className="font-mono tabular-nums">{assignment.site_distance_km.toFixed(2)} km</span>
         {assignment.site_suitability != null ? (

@@ -19,6 +19,11 @@ export type HazardType =
 
 export type HazardRegime = 'floodplain' | 'char_belt' | 'channel';
 
+/** How a habitation's hazard regime routes its relocation (Phase 2e). */
+export type RelocationPathway = 'mainland_resettlement' | 'in_situ_or_nearby' | 'not_applicable';
+
+export type AllocationRegimeBreakdown = components['schemas']['AllocationRegimeBreakdownDTO'];
+
 /**
  * One hexagon of a hazard layer.
  *

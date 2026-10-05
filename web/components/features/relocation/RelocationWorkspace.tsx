@@ -22,6 +22,7 @@ import type {
   CandidateSiteItem,
   CapacityBreakdown,
   HabitationListItem,
+  HazardRegime,
 } from '@/lib/api/types';
 
 import { DistrictSelect } from './DistrictSelect';
@@ -91,7 +92,8 @@ export const RelocationWorkspace = ({
     ...initialSettings,
   });
 
-  const queue = useHabitationQueue({ admin: districtId ?? undefined, limit: 50 });
+  const [regimeFilter, setRegimeFilter] = useState<HazardRegime | undefined>(undefined);
+  const queue = useHabitationQueue({ admin: districtId ?? undefined, regime: regimeFilter, limit: 50 });
   const { districts } = useDistricts();
   const activeDistrictId = districtId ?? districts[0]?.id ?? null;
 
@@ -305,6 +307,8 @@ export const RelocationWorkspace = ({
               selectedId={selectedHabitation?.id ?? null}
               onSelect={handleSelectHabitation}
               onRetry={queue.refetch}
+              regime={regimeFilter ?? 'all'}
+              onRegimeChange={setRegimeFilter}
               onToggleCollapse={() => setIsLeftCollapsed(true)}
               actionSlot={
                 districts.length > 1 ? (

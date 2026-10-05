@@ -1,6 +1,7 @@
 import { MetricCard } from '@/components/common';
 import type { AllocationPlanResponse } from '@/lib/api/types';
 
+import { AllocationRegimeBreakdown } from './AllocationRegimeBreakdown';
 import { UnmetDemandMeter } from './UnmetDemandMeter';
 
 export interface AllocationSummaryProps {
@@ -10,6 +11,7 @@ export interface AllocationSummaryProps {
     root?: string;
     metrics?: string;
     meter?: string;
+    regimes?: string;
     provenance?: string;
   };
 }
@@ -49,6 +51,8 @@ export const AllocationSummary = ({
       totalHouseholds={plan.total_demand_households}
       className={classNames.meter}
     />
+
+    <AllocationRegimeBreakdown breakdown={plan.regime_breakdown ?? []} className={classNames.regimes} />
 
     <p className={['text-[10px] text-ink-faint', classNames.provenance ?? ''].join(' ')}>
       Run {plan.allocation_run_id.slice(0, 8)} · {plan.status.toLowerCase()} ·{' '}

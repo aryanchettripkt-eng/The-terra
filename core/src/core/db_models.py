@@ -343,6 +343,8 @@ class HabitationRisk(Base):
     relocation_cost: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     adverse_trend: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     tier: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    hazard_regime: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    relocation_pathway: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     triage_rationale: Mapped[str] = mapped_column(String, default="", nullable=False)
     contributing_factors: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, nullable=False)
     dominant_hazard: Mapped[str] = mapped_column(String, default="landslide", nullable=False)

@@ -45,7 +45,7 @@ class ChatCitation(BaseSchema):
     )
     provenance: str = Field(
         default="authoritative",
-        description="Provenance grade ('authoritative', 'derived_unverified', 'external_gis').",
+        description="Provenance grade ('authoritative', 'derived_unverified', 'external_gis', 'synthetic_demo').",
     )
 
 
@@ -58,8 +58,8 @@ class RelocationChatRequest(BaseSchema):
         description="Chat history leading up to the current prompt (max 20 messages).",
     )
     district: Optional[str] = Field(
-        default="Barpeta",
-        description="Active administrative district in focus.",
+        default=None,
+        description="Active administrative district in focus (page context). Omit when none is selected; the assistant then asks which district is meant.",
     )
     habitation_id: Optional[int] = Field(
         default=None,
@@ -136,4 +136,24 @@ class RelocationChatResponse(BaseSchema):
     district: Optional[str] = Field(
         default=None,
         description="District context of the response.",
+    )
+    intent: Optional[str] = Field(
+        default=None,
+        description="Classified intent of the user prompt.",
+    )
+    plan_summary: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Summary of the resolved query plan.",
+    )
+    data_trust: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Data trust and quality metrics.",
+    )
+    prompt_version: Optional[str] = Field(
+        default=None,
+        description="Version of the prompt template used.",
+    )
+    limits: Optional[List[str]] = Field(
+        default=None,
+        description="Deterministic limits and caveats.",
     )

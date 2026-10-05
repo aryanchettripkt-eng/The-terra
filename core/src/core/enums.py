@@ -46,6 +46,13 @@ class HazardRegime(StrEnum):
     CHANNEL = "channel"
 
 
+class RelocationPathway(StrEnum):
+    """How a habitation's hazard regime shapes what can be done for it (flood model v0.2, Phase 2e)."""
+    MAINLAND_RESETTLEMENT = "mainland_resettlement"
+    IN_SITU_OR_NEARBY = "in_situ_or_nearby"
+    NOT_APPLICABLE = "not_applicable"
+
+
 class ZoneClass(StrEnum):
     """Hazard zone classifications (PRD §6.3)."""
     PERMANENT_RED = "permanent_red"

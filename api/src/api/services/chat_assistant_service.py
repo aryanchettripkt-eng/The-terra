@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from core.config import settings
+from core.constants import SITE_MAX_MHI_STATIC, SITE_MAX_SLOPE_DEG
 from core.schemas.chat import (
     ChatCitation,
     ChatMessage,
@@ -25,69 +26,76 @@ from core.schemas.chat import (
     ToolExecutionRecord,
 )
 from api.services.recommendations_service import RecommendationsService
+from api.services.chat import (
+    QueryPlan,
+    RefusalReason,
+    build_compact_context_block,
+    build_query_plan,
+    enforce_toolset,
+    filter_tools_spec,
+)
+from api.services.chat_triage import (
+    MONITORING_NOTE,
+    SYNTHETIC_NOTICE,
+    URGENT_SCOPE_NOTE,
+    fetch_tier_rows,
+    quality_provenance,
+    render_tier_table,
+    summarize_tier_rows,
+    tier_label,
+)
 
 logger = logging.getLogger("setu_api.chat_assistant")
 
-SYSTEM_PROMPT = """You are the Senior Relocation Decision Analyst and Legal Resettlement Advisor for the SETU-DRR platform (Disaster Management Division / NDRF).
-Your job is to provide authoritative, grounded, mathematically precise, and legally defensible briefings on:
-1. Village disaster exposure and triage priorities (Immediate vs Short-Term vs Monitoring).
-2. Population and households at risk from riverine flooding, riverbank erosion, and landslides.
-3. Candidate relocation site suitability, carrying capacity, and lifeline deficits.
-4. Side-by-side comparative evaluations between SETU's canonical OR-Tools optimization engine and external partner GIS recommendations.
+# Tools that must never run against a guessed district
+_DISTRICT_REQUIRED_TOOLS = frozenset({"list_urgent_villages", "compare_relocation_plans"})
 
-CORE OPERATIONAL RULES:
+_SYSTEM_PROMPT_TEMPLATE = """You are a read-only decision-support analyst for the SETU-DRR platform (Disaster Management Division / NDRF).
+You explain triage results, candidate relocation sites and benchmark comparisons using database tool results.
+You do not make decisions: the District Magistrate or responsible officer decides. State facts and their limits.
 
-1. POPULATION AND HOUSEHOLD ACCOUNTING (PEOPLE IN DANGER = URGENT POPULATION):
-   - Every habitation in the SETU database contains BOTH verified 'population' (individual persons) AND 'households' (families).
-   - "People in danger" refers specifically to the population in urgent triage tiers ('immediate' and 'short_term'):
-     * In Barpeta: **24,759 persons (5,502 households)** in 16 habitations (Tier: short_term, riverine flood).
-     * In Wayanad: **29,990 persons (6,700 households)** in 4 habitations (Immediate: 5,990 persons / 1,350 HH; Short-Term: 24,000 persons / 5,350 HH, landslide).
-     * In Kodagu: **4,100 persons (920 households)** in 1 habitation (Tier: immediate, landslide).
-   - NEVER confuse the total census population of the entire district (e.g. 899,858 in Wayanad) with the population in danger! The population in danger is the URGENT population at risk (29,990 in Wayanad).
-   - NEVER state that population is an unmeasured data gap or that average household size is unknown.
-   - NEVER write 'Data not disclosed' or omit village names. Always display the exact habitations returned by the tool (e.g. Mundakkai, Chooralmala, Vythiri, Meppadi for Wayanad; Howly, Bohori, Pathsala, etc. for Barpeta).
+CORE RULES
 
-2. STRICT DISTINCTION BETWEEN AT-RISK HABITATIONS AND CANDIDATE RELOCATION SITES:
-   - HABITATIONS (Origin Villages): These are existing settlements EXPOSED to hazards.
-     * Tier 'immediate': Urgent relocation within 0-6 months (severe landslide risk, extreme PRZ overlap > 50%, high hazard intensity).
-     * Tier 'short_term': Planned relocation within 6-24 months (severe riverine flooding, river erosion, chronic inundation).
-     * Tier 'monitoring': Low/moderate exposure; continue monitoring.
-     * CRITICAL: Habitations DO NOT pass or fail Section 6.8 / H7 Hard Gates! They are the at-risk communities that NEED relocation.
-   - CANDIDATE SITES (Destination Parcels): These are safe parcels of land evaluated to RECEIVE displaced families.
-     * Section 6.8 / H7 Hard Gates apply ONLY to Candidate Sites:
-       - Multi-Hazard Index (MHI) < 0.25 (and not NULL in Order-Grade mode).
-       - Slope < 15 degrees.
-       - Zero overlap with protected forests, CRZ, or wetlands.
-       - Verified land tenure.
-     * NEVER state that habitations or at-risk villages passed candidate site gates!
+1. USE TOOL RESULTS ONLY.
+   - Every figure (population, households, counts, scores, capacities) must come from a tool result in this conversation or from the `calculate` tool. If you have no tool result for a figure, call a tool or say you do not have it.
+   - Never answer population, triage or site questions from memory.
 
-3. EPISTEMIC INTEGRITY FOR RELOCATION SITES (HONEST DATA GAPS):
-   - If a candidate site's hazard index (MHI) is NULL or unmeasured, explicitly state: "The multi-hazard index for this site is currently unmeasured (honest data gap) — physical ground geotechnical/hydraulic verification is legally required prior to allotment."
-   - If water, school, or health lifelines are unmeasured on a candidate site, explicitly state that carrying capacity is provisional (land-only proxy).
-   - If land tenure is "tenure_unverified", state that cadastral revenue verification is mandatory.
+2. REPORT DATA GAPS AND DATA QUALITY. NEVER HIDE THEM.
+   - NULL or unmeasured values are data gaps. Say so. Never turn them into zero or into "safe".
+   - Each habitation has a data quality: `derived` (pipeline output) or `synthetic` (illustrative demo data). Whenever a figure you report includes synthetic rows (tool flags such as `has_synthetic`, `urgent_has_synthetic`, `data_quality: synthetic`), say so explicitly next to that figure.
+   - Candidate site lifelines (water, school, health) that are unmeasured mean carrying capacity is provisional (land-only proxy).
+   - If a site's multi-hazard index (MHI) is NULL, say: "The multi-hazard index for this site is currently unmeasured (honest data gap); physical geotechnical/hydraulic verification is legally required before allotment."
+   - If land tenure is `tenure_unverified`, say cadastral revenue verification is mandatory.
 
-4. CITE PROVENANCE EXPLICITLY:
-   - Always reference the data source using markdown tags:
-     * `[Source: SETU PostGIS Engine]` for triage scores, PRZ overlaps, population, and canonical assignments.
-     * `[Source: External Partner GIS]` for external offline proposals.
-     * `[Source: Statutory H7 Hard Gate]` for reasons a candidate site was excluded.
+3. TRIAGE TIERS (habitation_risk.tier).
+   - immediate: relocation window 0-6 months. short_term: 6-24 months. medium_term: 2-5 years. mitigate_in_situ: civil protection preferred over relocation.
+   - No tier (reported as "Monitoring"): triage evaluated the settlement and it did not meet any relocation tier. This is NOT a finding that the settlement is safe, and it is NOT missing data. A habitation with no triage result at all is reported as "Not scored".
+   - When summarising a district, show EVERY tier with its count, including zero and Monitoring. "Urgent" means immediate + short_term only; never present urgent figures as a district's total exposure.
+   - Do not call a place "safe" or "low risk" because it has no relocation tier.
 
-5. DETERMINISTIC BRIEFING STRUCTURE (MANDATORY FORMAT):
-   When reporting on population at risk or triage queue, ALWAYS format your response with:
-   - Header: `## Disaster Exposure Briefing: [District Name]`
-   - Key Metrics Callout:
-     * Total Population at Risk: **X persons**
-     * Total Households at Risk: **Y households**
-     * Urgent Habitations: **Z habitations**
-     * Primary Hazard: [e.g. Riverine Flooding / Landslide]
-   - Triage Tier Breakdown Table:
-     | Hazard Tier | Habitations | Population at Risk | Households at Risk | Dominant Hazard | Priority Window |
-   - Habitation Roster Table:
-     | # | Habitation Name (ID) | Population | Households | Tier | Hazard Intensity | Dominant Hazard |
-   - Operational Recommendations:
-     * Priority evacuation / relocation actions.
-     * Destination safety criteria (candidate sites must pass Section 6.8 / H7 Hard Gates).
+4. HABITATIONS VS CANDIDATE SITES.
+   - Habitations are existing settlements exposed to hazards; they do not pass or fail site gates.
+   - Section 6.8 / H7 hard gates apply only to candidate (destination) sites: multi-hazard index (MHI) < __MHI_MAX__ (and not NULL in order-grade mode); slope < __SLOPE_MAX__ degrees; no overlap with protected forest, CRZ or wetlands; verified land tenure.
+   - Most candidate sites are screening candidates: eligibility `unknown` / assessment `partial` means the gates could not be evaluated, not that the site failed or passed.
+
+5. CITE PROVENANCE using these tags:
+   - `[Source: SETU PostGIS Engine]` for triage scores, PRZ overlaps, population and canonical assignments.
+   - `[Source: External Partner GIS]` for external offline proposals.
+   - `[Source: Statutory H7 Hard Gate]` for reasons a candidate site was excluded.
+   - Add `[Synthetic demo data]` after any figure that comes from synthetic rows.
+
+6. FACTS ONLY. NO RECOMMENDATIONS.
+   - Do not tell the officer what to do (no "should relocate", "must evacuate", "priority actions"). Present the facts and what they do and do not show.
+   - Weather alerts concern emergency evacuation and never change a permanent relocation tier; do not mix the two.
+   - Flood results are susceptibility, not forecasts: say "flood-prone", never "will flood".
+   - If asked for a decision or a prediction, decline briefly and offer the relevant facts.
+
+7. FORMAT: concise Markdown. For district summaries use a table with one row per tier: Tier | Habitations | Population | Households | Data quality. Add a roster of habitations only when asked.
 """
+
+SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.replace("__MHI_MAX__", f"{SITE_MAX_MHI_STATIC:g}").replace(
+    "__SLOPE_MAX__", f"{SITE_MAX_SLOPE_DEG:g}"
+)
 
 
 class RelocationChatAssistantService:
@@ -109,7 +117,8 @@ class RelocationChatAssistantService:
                    hr.tier, hr.hazard_intensity, hr.prz_overlap_pct, hr.priority_score,
                    hr.caseload_score, hr.triage_rationale, hr.dominant_hazard,
                    hr.contributing_factors, hr.pipeline_run_id, hr.calculated_at,
-                   hr.adverse_trend
+                   hr.adverse_trend, hr.data_quality, h.type AS habitation_type,
+                   (hr.habitation_id IS NOT NULL) AS scored
             FROM habitation h
             LEFT JOIN habitation_risk hr ON h.id = hr.habitation_id
             LEFT JOIN admin_boundary ab ON h.admin_id = ab.id
@@ -133,7 +142,22 @@ class RelocationChatAssistantService:
         if res.get("calculated_at"):
             res["calculated_at"] = str(res["calculated_at"])
 
-        return {"found": True, "habitation": res}
+        scored = bool(res.get("scored"))
+        res["tier_label"] = tier_label(res.get("tier"), scored=scored)
+        notes: List[str] = []
+        if not scored:
+            notes.append("This habitation has no triage result (not scored); do not describe it as low risk.")
+        elif not res.get("tier"):
+            notes.append(MONITORING_NOTE)
+        if res.get("data_quality") == "synthetic":
+            notes.append(SYNTHETIC_NOTICE)
+
+        return {
+            "found": True,
+            "habitation": res,
+            "has_synthetic": res.get("data_quality") == "synthetic",
+            "notes": notes,
+        }
 
     def compare_relocation_plans(
         self,
@@ -212,10 +236,16 @@ class RelocationChatAssistantService:
         }
 
     def list_urgent_villages(self, district: str) -> Dict[str, Any]:
-        """Lists habitations categorized in immediate or short-term triage tiers."""
+        """Lists urgent (immediate / short-term) habitations plus the district's full tier breakdown.
+
+        ``total_population_at_risk`` / ``total_households_at_risk`` count urgent tiers only. ``tier_summary``
+        lists every tier (medium-term, monitoring and zero counts included) with data quality, so urgent-only
+        figures are never mistaken for the district's total exposure.
+        """
         query_sql = text("""
             SELECT h.id, h.name, h.population, h.households, hr.tier, hr.hazard_intensity,
-                   hr.prz_overlap_pct, hr.priority_score, hr.caseload_score, hr.dominant_hazard
+                   hr.prz_overlap_pct, hr.priority_score, hr.caseload_score, hr.dominant_hazard,
+                   hr.data_quality
             FROM habitation h
             JOIN habitation_risk hr ON h.id = hr.habitation_id
             JOIN admin_boundary ab ON h.admin_id = ab.id
@@ -260,11 +290,23 @@ class RelocationChatAssistantService:
             for t in tier_summary.values()
         ]
 
+        summary = summarize_tier_rows(fetch_tier_rows(self.db, district))
+        urgent_has_synthetic = any(h.get("data_quality") == "synthetic" for h in habs) or summary["urgent"]["has_synthetic"]
+
         return {
             "district": district,
+            "district_found": summary["found"],
             "urgent_count": len(habs),
             "total_population_at_risk": total_pop,
             "total_households_at_risk": total_hh,
+            "urgent_scope_note": URGENT_SCOPE_NOTE,
+            "urgent_has_synthetic": urgent_has_synthetic,
+            "has_synthetic": summary["has_synthetic"] or urgent_has_synthetic,
+            "tier_summary": summary["tiers"],
+            "tier_totals": summary["totals"],
+            "notes": summary["notes"]
+            if summary["found"]
+            else [f"No habitations are loaded for district '{district}'."],
             "tier_breakdown": tier_breakdown,
             "urgent_habitations": habs,
         }
@@ -286,7 +328,13 @@ class RelocationChatAssistantService:
                    COALESCE(SUM(CASE WHEN hr.tier IN ('immediate', 'short_term') THEN h.population ELSE 0 END), 0) as urgent_population,
                    COALESCE(SUM(CASE WHEN hr.tier IN ('immediate', 'short_term') THEN h.households ELSE 0 END), 0) as urgent_households,
                    COALESCE(SUM(CASE WHEN hr.tier = 'immediate' THEN h.population ELSE 0 END), 0) as immediate_population,
-                   COALESCE(SUM(CASE WHEN hr.tier = 'short_term' THEN h.population ELSE 0 END), 0) as short_term_population
+                   COALESCE(SUM(CASE WHEN hr.tier = 'short_term' THEN h.population ELSE 0 END), 0) as short_term_population,
+                   COUNT(CASE WHEN hr.tier = 'medium_term' THEN h.id END) as medium_term_habitations,
+                   COALESCE(SUM(CASE WHEN hr.tier = 'medium_term' THEN h.population ELSE 0 END), 0) as medium_term_population,
+                   COUNT(CASE WHEN hr.habitation_id IS NOT NULL AND hr.tier IS NULL THEN h.id END) as monitoring_habitations,
+                   COALESCE(SUM(CASE WHEN hr.habitation_id IS NOT NULL AND hr.tier IS NULL THEN h.population ELSE 0 END), 0) as monitoring_population,
+                   COUNT(CASE WHEN hr.habitation_id IS NULL THEN h.id END) as unscored_habitations,
+                   COUNT(CASE WHEN hr.tier IN ('immediate', 'short_term') AND hr.data_quality = 'synthetic' THEN h.id END) as synthetic_urgent_habitations
             FROM admin_boundary ab
             JOIN habitation h ON h.admin_id = ab.id
             LEFT JOIN habitation_risk hr ON h.id = hr.habitation_id
@@ -296,11 +344,20 @@ class RelocationChatAssistantService:
         """)
         rows = self.db.execute(query_sql, params).mappings().all()
         districts_data = [dict(r) for r in rows]
+        for r in districts_data:
+            r["urgent_has_synthetic"] = bool(r.get("synthetic_urgent_habitations"))
+        any_synthetic = any(r["urgent_has_synthetic"] for r in districts_data)
+        notes = [URGENT_SCOPE_NOTE, MONITORING_NOTE]
+        if any_synthetic:
+            notes.append(SYNTHETIC_NOTICE)
         return {
             "districts": districts_data,
             "total_districts": len(districts_data),
             "total_urgent_population": sum(r["urgent_population"] for r in districts_data),
             "total_urgent_households": sum(r["urgent_households"] for r in districts_data),
+            "urgent_has_synthetic": any_synthetic,
+            "has_synthetic": any_synthetic,
+            "notes": notes,
         }
 
     def assess_candidate_sites_suitability(
@@ -543,6 +600,52 @@ class RelocationChatAssistantService:
 
         return text
 
+    @classmethod
+    def _has_synthetic(cls, node: Any) -> bool:
+        """True when any tool result flags synthetic demo data."""
+        if isinstance(node, dict):
+            if node.get("has_synthetic") or node.get("urgent_has_synthetic") or node.get("data_quality") == "synthetic":
+                return True
+            return any(cls._has_synthetic(v) for v in node.values())
+        if isinstance(node, list):
+            return any(cls._has_synthetic(v) for v in node)
+        return False
+
+    def _append_data_notices(self, text: str, grounding_data: Dict[str, Any]) -> str:
+        """Appends facts the model may have omitted, taken only from this turn's tool results.
+
+        - the complete tier breakdown when a non-empty tier (e.g. medium-term, monitoring) is not mentioned;
+        - the synthetic-data notice when any cited data is synthetic.
+        The model cannot drop either, so urgent-only figures and demo data are never presented bare.
+        """
+        normalised = text.lower().replace("-", " ").replace("_", " ")
+        extras: List[str] = []
+
+        for res in grounding_data.values():
+            if not isinstance(res, dict) or not res.get("tier_summary"):
+                continue
+            unmentioned = [
+                t for t in res["tier_summary"]
+                if t.get("habitations")
+                and t["tier"].replace("_", " ") not in normalised
+                and t["label"].split(" (")[0].lower() not in normalised
+            ]
+            if unmentioned:
+                extras.append(
+                    f"**Complete tier breakdown ({res.get('district', 'district')})**, including tiers not covered above:\n\n"
+                    + render_tier_table({"tiers": res["tier_summary"], "totals": res.get("tier_totals", {})})
+                )
+
+        if self._has_synthetic(grounding_data) and "synthetic" not in normalised:
+            extras.append(f"> {SYNTHETIC_NOTICE}")
+
+        return text + "\n\n" + "\n\n".join(extras) if extras else text
+
+    def _finalize_reply(self, text: Optional[str], tools_executed: List[str], grounding_data: Dict[str, Any]) -> str:
+        """Heuristic guard plus code-appended data notices."""
+        guarded = self._verify_and_guard_answer(text or "", tools_executed, grounding_data)
+        return self._append_data_notices(guarded, grounding_data)
+
     # =========================================================================
     # Tool Registry & JSON Schema Definitions for Groq
     # =========================================================================
@@ -625,7 +728,7 @@ class RelocationChatAssistantService:
                 "type": "function",
                 "function": {
                     "name": "list_urgent_villages",
-                    "description": "ALWAYS USE THIS TOOL when the user asks how many people, households, or villages are in danger or urgent in a specific district (e.g. Barpeta, Wayanad, Kodagu). Returns exact population, households, hazard intensity, and village names.",
+                    "description": "ALWAYS USE THIS TOOL when the user asks how many people, households, or villages are in danger or urgent in a specific district (e.g. Barpeta, Wayanad, Kodagu). Returns the urgent (immediate + short_term) habitations AND a tier_summary covering every tier (medium_term, monitoring, zero counts) with data quality (derived vs synthetic). Report all tiers, not just the urgent ones, and state when figures include synthetic data.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -642,7 +745,7 @@ class RelocationChatAssistantService:
                 "type": "function",
                 "function": {
                     "name": "get_district_hazard_summary",
-                    "description": "Use ONLY when comparing multiple districts or asking about national / all-district totals (e.g. 'overview of all districts', 'which district is worst?').",
+                    "description": "Use ONLY when comparing multiple districts or asking about national / all-district totals (e.g. 'overview of all districts', 'which district is worst?'). Returns urgent, medium_term and monitoring counts per district plus whether urgent figures include synthetic data.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -759,7 +862,40 @@ class RelocationChatAssistantService:
             },
         ]
 
-    def _execute_tool(self, name: str, args: Dict[str, Any]) -> Tuple[Dict[str, Any], List[ChatCitation], ToolExecutionRecord]:
+    def _execute_tool(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        allowed_tools: Optional[List[str]] = None,
+    ) -> Tuple[Dict[str, Any], List[ChatCitation], ToolExecutionRecord]:
+        if allowed_tools is not None:
+            is_permitted, err_msg = enforce_toolset(name, allowed_tools)
+            if not is_permitted:
+                return (
+                    {"error": err_msg, "found": False},
+                    [],
+                    ToolExecutionRecord(
+                        name=name,
+                        description=f"Rejected disallowed tool call: {name}",
+                        arguments=args,
+                        status="failed",
+                        data_source="SETU Policy Guard",
+                    ),
+                )
+
+        if name in _DISTRICT_REQUIRED_TOOLS and not args.get("district"):
+            return (
+                {"error": f"'{name}' requires a district; none was given or resolved.", "found": False},
+                [],
+                ToolExecutionRecord(
+                    name=name,
+                    description=f"Rejected {name}: district missing",
+                    arguments=args,
+                    status="failed",
+                    data_source="SETU Policy Guard",
+                ),
+            )
+
         citations: List[ChatCitation] = []
         data: Dict[str, Any] = {}
         description = f"Executed {name}"
@@ -776,13 +912,16 @@ class RelocationChatAssistantService:
                     ChatCitation(
                         source="SETU PostGIS Engine",
                         detail=f"Habitation #{h['id']} ({h['name']}) triage score",
-                        metric=f"Tier: {h.get('tier')}, Priority: {h.get('priority_score')}, PRZ: {h.get('prz_overlap_pct')}%",
-                        provenance="authoritative",
+                        metric=(
+                            f"Tier: {h.get('tier_label')}, Priority: {h.get('priority_score')}, PRZ: {h.get('prz_overlap_pct')}%"
+                            + (" · synthetic demo data" if data.get("has_synthetic") else "")
+                        ),
+                        provenance=quality_provenance(bool(data.get("has_synthetic"))),
                     )
                 )
 
         elif name == "compare_relocation_plans":
-            dist = str(args.get("district", "Barpeta"))
+            dist = str(args.get("district"))
             hid = args.get("habitation_id")
             description = f"Compared SETU canonical OR-Tools allocation against external GIS recommendation for {dist}"
             data_source = "SETU Optimization Solver & External Benchmarks"
@@ -837,13 +976,16 @@ class RelocationChatAssistantService:
                 ChatCitation(
                     source="SETU PostGIS Engine",
                     detail=f"District Hazard Overview ({dist or 'All Districts'})",
-                    metric=f"{data.get('total_urgent_population', 0):,} persons ({data.get('total_urgent_households', 0):,} HH) at risk",
-                    provenance="authoritative",
+                    metric=(
+                        f"{data.get('total_urgent_population', 0):,} persons ({data.get('total_urgent_households', 0):,} HH) in urgent tiers"
+                        + (" · includes synthetic demo data" if data.get("has_synthetic") else "")
+                    ),
+                    provenance=quality_provenance(bool(data.get("has_synthetic"))),
                 )
             )
 
         elif name == "list_urgent_villages":
-            dist = str(args.get("district", "Barpeta"))
+            dist = str(args.get("district"))
             description = f"Retrieved urgent (immediate & short_term) triage habitations queue for district {dist}"
             data_source = "PostgreSQL / PostGIS (triage queue)"
             data = self.list_urgent_villages(dist)
@@ -851,8 +993,12 @@ class RelocationChatAssistantService:
                 ChatCitation(
                     source="SETU Triage Queue",
                     detail=f"Urgent Habitations in {dist}",
-                    metric=f"{data.get('total_population_at_risk', 0):,} persons ({data.get('total_households_at_risk', 0):,} HH) across {data.get('urgent_count', 0)} habitations",
-                    provenance="authoritative",
+                    metric=(
+                        f"{data.get('total_population_at_risk', 0):,} persons ({data.get('total_households_at_risk', 0):,} HH) "
+                        f"in {data.get('urgent_count', 0)} urgent habitations"
+                        + (" · includes synthetic demo data" if data.get("urgent_has_synthetic") else "")
+                    ),
+                    provenance=quality_provenance(bool(data.get("urgent_has_synthetic"))),
                 )
             )
 
@@ -946,8 +1092,97 @@ class RelocationChatAssistantService:
         self,
         request: RelocationChatRequest,
         error_reason: Optional[str] = None,
+        plan: Optional[QueryPlan] = None,
     ) -> RelocationChatResponse:
         """Deterministic grounded synthesizer when LLM API is unavailable or offline."""
+        if plan is None:
+            plan = build_query_plan(request, db=self.db)
+
+        # 1. Handle clarification requirement
+        if plan.needs_clarification:
+            return RelocationChatResponse(
+                reply=plan.needs_clarification,
+                tools_called=[],
+                tool_executions=[],
+                citations=[],
+                grounding_data={},
+                fallback_used=True,
+                fallback_reason=error_reason or "Clarification required: ambiguous entity",
+                district=plan.entities.districts[0] if plan.entities.districts else request.district,
+                intent=plan.intent.value,
+                plan_summary=plan.summary,
+                data_trust=plan.trust.model_dump() if plan.trust else None,
+            )
+
+        # 2. Handle mandatory refusals (§3 invariants)
+        if plan.refusal == RefusalReason.DECISION_REQUEST:
+            target_d = plan.entities.districts[0] if plan.entities.districts else request.district
+            reply = (
+                "### Relocation Decision Protocol Notice (Section 6.8 / NDMA Guidelines)\n\n"
+                "SETU-DRR is a decision support and risk analytics platform. Under statutory disaster management framework, automated systems **cannot mandate or decide executive relocations or evacuations**.\n\n"
+                "Final relocation decisions are the sole authority of the District Disaster Management Authority (DDMA) and designated Incident Commanders.\n\n"
+                "**Available Objective Facts**:\n"
+                "- Exposure and triage prioritization data can be reviewed via village hazard queries.\n"
+                "- Certified candidate resettlement sites can be audited for carrying capacity and infrastructure deficits.\n\n"
+                + (f"*Scope: {target_d} District*" if target_d else "")
+            )
+            return RelocationChatResponse(
+                reply=reply,
+                tools_called=[],
+                tool_executions=[],
+                citations=[],
+                grounding_data={},
+                fallback_used=True,
+                fallback_reason=error_reason or "Refusal: Executive relocation decisions reserved for DDMA incident commanders",
+                district=target_d,
+                intent=plan.intent.value,
+                plan_summary=plan.summary,
+                data_trust=plan.trust.model_dump() if plan.trust else None,
+            )
+
+        if plan.refusal == RefusalReason.PREDICTION_REQUEST:
+            reply = (
+                "### Hazard Forecasting Protocol Notice\n\n"
+                "SETU-DRR models compute **long-term multi-hazard susceptibility and chronic inundation/landslide exposure** based on terrain, slope, and hydrodynamic recurrence. The platform **does not forecast real-time disaster arrival timing** or predict specific future flood event dates.\n\n"
+                "For real-time telemetry and immediate flash flood warnings, refer to Central Water Commission (CWC) river gauges or India Meteorological Department (IMD) nowcasts."
+            )
+            return RelocationChatResponse(
+                reply=reply,
+                tools_called=[],
+                tool_executions=[],
+                citations=[],
+                grounding_data={},
+                fallback_used=True,
+                fallback_reason=error_reason or "Refusal: Real-time disaster event forecasting out of model scope",
+                district=plan.entities.districts[0] if plan.entities.districts else request.district,
+                intent=plan.intent.value,
+                plan_summary=plan.summary,
+                data_trust=plan.trust.model_dump() if plan.trust else None,
+            )
+
+        if plan.refusal == RefusalReason.OUT_OF_SCOPE:
+            reply = (
+                "I am the SETU-DRR Decision Support Assistant, specialized in disaster risk reduction, village triage priorities, and relocation site carrying capacity.\n\n"
+                "Your question falls outside the scope of hazard risk analysis. Please ask questions regarding:\n"
+                "- Habitation hazard exposure and triage tiers (e.g. 'People in danger in Barpeta')\n"
+                "- Candidate relocation site suitability and lifeline deficits (e.g. 'What is missing at site #1752?')\n"
+                "- Comparative evaluation against external GIS recommendations\n"
+                "- Disaster exposure and Section 6.8 / H7 hard gate methodology."
+            )
+            return RelocationChatResponse(
+                reply=reply,
+                tools_called=[],
+                tool_executions=[],
+                citations=[],
+                grounding_data={},
+                fallback_used=True,
+                fallback_reason=error_reason or "Out of scope query",
+                district=request.district,
+                intent=plan.intent.value,
+                plan_summary=plan.summary,
+                data_trust=plan.trust.model_dump() if plan.trust else None,
+            )
+
         latest_user_msg = ""
         for m in reversed(request.messages):
             if m.role == "user":
@@ -955,13 +1190,7 @@ class RelocationChatAssistantService:
                 break
 
         msg_lower = latest_user_msg.lower()
-        district = request.district or "Barpeta"
-
-        # Detect district from message text if mentioned
-        for cand in ["barpeta", "wayanad", "kodagu", "rudraprayag", "dholpur", "srinagar", "morena"]:
-            if cand in msg_lower or (cand == "wayanad" and ("wayand" in msg_lower or "waynad" in msg_lower)):
-                district = cand.capitalize()
-                break
+        district = plan.entities.districts[0] if plan.entities.districts else request.district
 
         tools_called: List[str] = []
         tool_executions: List[ToolExecutionRecord] = []
@@ -1061,17 +1290,18 @@ class RelocationChatAssistantService:
             if total_setu == 0 and total_ext > 0:
                 reply += (
                     "> [!IMPORTANT]\n"
-                    "> **Section 6.8 (H7 Gate Invariant)**: In strict Order-Grade mode, SETU rejects candidate sites "
-                    "whose multi-hazard index (MHI) is unmeasured (`NULL`) or whose land tenure is unverified. "
-                    "External partner pipelines relied on geometric proximity proxies without geotechnical verification, "
-                    "which creates hazardous administrative liability. To simulate exploratory allocations, switch to **Screening Mode**.\n\n"
+                    "> **Section 6.8 (H7 Gate)**: In order-grade mode SETU only allocates to candidate sites whose "
+                    "multi-hazard index (MHI) is measured and under the gate threshold and whose land tenure is verified. "
+                    "Sites with an unmeasured (`NULL`) MHI, unknown eligibility or unverified tenure cannot be allocated, "
+                    "so SETU's allocation can be empty while an external proposal is not. "
+                    "Switch to **Screening Mode** to see provisional allocations.\n\n"
                 )
 
             if comps:
                 reply += "| Habitation | Demand | External Site | SETU Site | Status |\n| :--- | :--- | :--- | :--- | :--- |\n"
                 for item in comps[:6]:
                     ext_s = item.get("external_recommendation", {}).get("site_id", "N/A") if item.get("external_recommendation") else "None"
-                    setu_s = item.get("setu_canonical_allocation", {}).get("site_id", "None") if item.get("setu_canonical_allocation") else "Rejected (H7 Gate)"
+                    setu_s = item.get("setu_canonical_allocation", {}).get("site_id", "None") if item.get("setu_canonical_allocation") else "No SETU allocation"
                     reply += f"| {item.get('habitation_name')} | {item.get('demand_households')} HH | #{ext_s} | #{setu_s} | {'Matched' if item.get('site_match') else 'Diverged'} |\n"
 
             return RelocationChatResponse(
@@ -1141,17 +1371,21 @@ class RelocationChatAssistantService:
 
             if data.get("found"):
                 h = data["habitation"]
+                dq = h.get("data_quality") or "unknown"
                 reply = (
                     f"### Habitation Relocation Assessment: {h.get('name')} (ID #{h.get('id')})\n\n"
                     f"- **District**: {h.get('district_name')} `[Source: SETU PostGIS Engine]`\n"
-                    f"- **Triage Tier**: **{str(h.get('tier', 'monitoring')).upper()}**\n"
+                    f"- **Triage Tier**: **{h.get('tier_label')}**\n"
+                    f"- **Data quality**: `{dq}`{' (synthetic demo data)' if dq == 'synthetic' else ''}\n"
                     f"- **Demographics**: **{h.get('population'):,} persons** ({h.get('households'):,} households)\n"
                     f"- **Hazard Exposure**: Hazard Intensity **{h.get('hazard_intensity')}**, Permanent Red Zone overlap **{h.get('prz_overlap_pct')}%**\n"
-                    f"- **Dominant Hazard**: `{h.get('dominant_hazard', 'riverine_flood')}`\n"
+                    f"- **Dominant Hazard**: `{h.get('dominant_hazard') or 'not recorded'}`\n"
                     f"- **Priority Score**: **{h.get('priority_score')}** (Caseload: {h.get('caseload_score')})\n\n"
-                    f"**Official Triage Rationale**:\n"
-                    f"> {h.get('triage_rationale', 'Awaiting full spatial cell join.')}\n"
+                    f"**Triage Rationale**:\n"
+                    f"> {h.get('triage_rationale') or 'No rationale recorded.'}\n"
                 )
+                for note in data.get("notes", []):
+                    reply += f"\n> {note}\n"
                 return RelocationChatResponse(
                     reply=reply,
                     tools_called=tools_called,
@@ -1197,30 +1431,29 @@ class RelocationChatAssistantService:
             districts_list = data.get("districts", [])
 
             reply = (
-                f"## National Disaster Exposure Summary: Cross-District Ranking\n\n"
-                f"- **Total Population in Urgent Danger**: **{total_urg_pop:,} persons** across all monitored districts `[Source: SETU PostGIS Engine]`\n"
-                f"- **Total Households in Urgent Danger**: **{total_urg_hh:,} households**\n\n"
-                f"### District Risk Ranking (Urgent Population at Risk)\n\n"
-                f"| Rank | District | Urgent Habitations | Urgent Population | Urgent Households | Immediate Risk | Short-Term Risk |\n"
-                f"| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+                f"## Disaster Exposure Summary: All Districts\n\n"
+                f"- **Urgent tiers (immediate + short-term)**: **{total_urg_pop:,} persons** "
+                f"({total_urg_hh:,} households) `[Source: SETU PostGIS Engine]`\n"
+                f"- Medium-term and monitoring habitations are listed per district below and are **not** included in the urgent totals.\n\n"
+                f"| District | Urgent habitations | Urgent population | Immediate pop. | Short-term pop. | Medium-term (habitations / pop.) | Monitoring (habitations / pop.) | Urgent data quality |\n"
+                f"| :--- | ---: | ---: | ---: | ---: | :--- | :--- | :--- |\n"
             )
-
-            rank = 1
             for d in districts_list:
-                if d.get("urgent_population", 0) > 0:
-                    reply += (
-                        f"| {rank} | **{d.get('district_name')}** | {d.get('urgent_habitations')} | "
-                        f"**{d.get('urgent_population'):,}** | **{d.get('urgent_households'):,}** | "
-                        f"{d.get('immediate_population', 0):,} | {d.get('short_term_population', 0):,} |\n"
-                    )
-                    rank += 1
-
-            reply += (
-                f"\n### Key Operational Findings\n\n"
-                f"1. **Wayanad** has the highest urgent population at risk (**29,990 persons** / 6,700 households), with 5,990 persons in the **immediate** landslide red zone requiring rapid pre-monsoon evacuation.\n"
-                f"2. **Barpeta** has the second-highest urgent population (**24,759 persons** / 5,502 households) across 16 settlements, dominated by chronic riverine flooding and riverbank erosion.\n"
-                f"3. **Kodagu** has 4,100 persons (920 households) facing immediate landslide risk.\n"
-            )
+                if d.get("urgent_has_synthetic"):
+                    dq = "synthetic demo data"
+                elif d.get("urgent_habitations"):
+                    dq = "derived"
+                else:
+                    dq = "none urgent"
+                reply += (
+                    f"| **{d.get('district_name')}** | {d.get('urgent_habitations', 0):,} | {d.get('urgent_population', 0):,} | "
+                    f"{d.get('immediate_population', 0):,} | {d.get('short_term_population', 0):,} | "
+                    f"{d.get('medium_term_habitations', 0):,} / {d.get('medium_term_population', 0):,} | "
+                    f"{d.get('monitoring_habitations', 0):,} / {d.get('monitoring_population', 0):,} | {dq} |\n"
+                )
+            reply += "\n"
+            for note in data.get("notes", []):
+                reply += f"> {note}\n"
 
             return RelocationChatResponse(
                 reply=reply,
@@ -1234,6 +1467,22 @@ class RelocationChatAssistantService:
                 district="All Districts",
             )
 
+        if not district:
+            return RelocationChatResponse(
+                reply="Which district do you mean? Please name one so the figures come from the right place.",
+                tools_called=[],
+                tool_executions=[],
+                citations=[],
+                grounding_data={},
+                fallback_used=True,
+                fallback_reason=error_reason or "Clarification required: no district resolved",
+                model="deterministic-grounded-fallback-v1.0",
+                district=None,
+                intent=plan.intent.value,
+                plan_summary=plan.summary,
+                data_trust=plan.trust.model_dump() if plan.trust else None,
+            )
+
         # 5. District urgent queue overview / people in danger
         tools_called.append("list_urgent_villages")
         data, cits, exec_rec = self._execute_tool("list_urgent_villages", {"district": district})
@@ -1244,44 +1493,49 @@ class RelocationChatAssistantService:
         total_pop = data.get("total_population_at_risk", 0)
         total_hh = data.get("total_households_at_risk", 0)
         habs = data.get("urgent_habitations", [])
-        tier_bk = data.get("tier_breakdown", [])
+        tier_summary = data.get("tier_summary", [])
 
-        reply = (
-            f"## Disaster Exposure Briefing: {district} District\n\n"
-            f"- **Total Population at Risk**: **{total_pop:,} persons** `[Source: SETU PostGIS Engine]`\n"
-            f"- **Total Households at Risk**: **{total_hh:,} households**\n"
-            f"- **Urgent Habitations**: **{len(habs)} settlements** requiring immediate or short-term resettlement\n\n"
-            f"### Hazard Triage Tier Summary\n\n"
-            f"| Hazard Triage Tier | Habitations | Population at Risk | Households at Risk | Dominant Hazard | Priority Window |\n"
-            f"| :--- | :--- | :--- | :--- | :--- | :--- |\n"
-        )
-
-        for tb in tier_bk:
-            t_name = tb["tier"].replace("_", " ").title()
-            hazards = ", ".join(tb.get("dominant_hazards", [])) or "Multi-Hazard"
-            window = "0–6 Months" if tb["tier"] == "immediate" else "6–24 Months"
-            reply += f"| **{t_name}** | {tb['habitations_count']} | **{tb['total_population']:,}** | **{tb['total_households']:,}** | {hazards} | {window} |\n"
-
-        reply += f"| **Total** | **{len(habs)}** | **{total_pop:,}** | **{total_hh:,}** | | |\n\n"
-
-        if habs:
-            reply += (
-                f"### Habitation Breakdown\n\n"
-                f"| # | Habitation Name (ID) | Population | Households | Tier | Hazard Intensity | Dominant Hazard |\n"
-                f"| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+        if not data.get("district_found", True):
+            reply = (
+                f"## Disaster Exposure Briefing: {district}\n\n"
+                f"No habitations are loaded for this district, so there are no triage results to report. "
+                f"`[Source: SETU PostGIS Engine]`\n"
             )
-            for idx, h in enumerate(habs[:16], start=1):
+        else:
+            reply = (
+                f"## Disaster Exposure Briefing: {district} District\n\n"
+                f"- **Urgent tiers (immediate + short-term)**: **{total_pop:,} persons** / **{total_hh:,} households** "
+                f"in **{len(habs)} habitations** `[Source: SETU PostGIS Engine]`\n"
+                f"- Urgent figures exclude medium-term and monitoring habitations; every tier is listed below.\n\n"
+            )
+            if tier_summary:
                 reply += (
-                    f"| {idx} | **{h.get('name')}** (#{h.get('id')}) | {h.get('population', 0):,} | {h.get('households', 0):,} | "
-                    f"`{h.get('tier')}` | {h.get('hazard_intensity', 0):.4f} | {h.get('dominant_hazard', 'riverine_flood')} |\n"
+                    "### Triage Tier Summary\n\n"
+                    + render_tier_table({"tiers": tier_summary, "totals": data.get("tier_totals", {})})
+                    + "\n\n"
                 )
 
-        reply += (
-            f"\n### Operational Guidance for Disaster Management\n\n"
-            f"1. **Triage Prioritization**: Settlements categorized as `immediate` must receive rapid pre-monsoon evacuation and high-priority site allocation within 0–6 months.\n"
-            f"2. **Resettlement Destination Rule (Section 6.8)**: All recipient candidate parcels must satisfy statutory H7 Hard Gates (MHI < 0.25, slope < 15°, zero forest/CRZ encroachment) before formal gazette allotment.\n"
-            f"3. **Epistemic Integrity Notice**: Household and population figures are drawn directly from the authoritative PostGIS administrative boundaries database.\n"
-        )
+            if habs:
+                reply += (
+                    f"### Urgent Habitations\n\n"
+                    f"| # | Habitation Name (ID) | Population | Households | Tier | Hazard Intensity | Dominant Hazard | Data quality |\n"
+                    f"| :--- | :--- | ---: | ---: | :--- | ---: | :--- | :--- |\n"
+                )
+                for idx, h in enumerate(habs[:16], start=1):
+                    reply += (
+                        f"| {idx} | **{h.get('name')}** (#{h.get('id')}) | {h.get('population', 0):,} | {h.get('households', 0):,} | "
+                        f"`{h.get('tier')}` | {h.get('hazard_intensity', 0):.4f} | {h.get('dominant_hazard') or 'not recorded'} | "
+                        f"{h.get('data_quality') or 'unknown'} |\n"
+                    )
+                reply += "\n"
+
+        for note in data.get("notes", []):
+            reply += f"> {note}\n"
+        if data.get("district_found", True):
+            reply += (
+                f"\n> Destination parcels are screened separately: Section 6.8 / H7 gates require MHI < {SITE_MAX_MHI_STATIC:g}, "
+                f"slope < {SITE_MAX_SLOPE_DEG:g}°, no forest/CRZ overlap and verified tenure.\n"
+            )
 
         return RelocationChatResponse(
             reply=reply,
@@ -1314,39 +1568,44 @@ class RelocationChatAssistantService:
 
     def answer_query(self, request: RelocationChatRequest) -> RelocationChatResponse:
         """Processes user query with Groq LLM tool calling, falling back safely if offline."""
+        # 1. Build deterministic query plan (§4.1)
+        plan = build_query_plan(request, db=self.db)
+
+        # 2. Check for clarification or refusal requirements
+        if plan.needs_clarification or plan.refusal:
+            return self._offline_fallback_synthesis(request, plan=plan)
+
         api_key = settings.GROQ_API_KEY
         if not api_key:
             logger.info("GROQ_API_KEY not configured; using grounded offline fallback synthesizer.")
-            return self._offline_fallback_synthesis(request, error_reason="GROQ_API_KEY not configured in environment")
+            return self._offline_fallback_synthesis(
+                request,
+                error_reason="GROQ_API_KEY not configured in environment",
+                plan=plan,
+            )
 
-        # Detect district from latest user message if explicitly specified
-        active_district = request.district or "Barpeta"
-        latest_user_text = ""
-        for m in reversed(request.messages):
-            if m.role == "user":
-                latest_user_text = m.content.lower()
-                break
+        # Active district from resolved entities or request
+        active_district = plan.entities.districts[0] if plan.entities.districts else request.district
 
-        for cand in ["barpeta", "wayanad", "kodagu", "rudraprayag", "dholpur", "srinagar", "morena"]:
-            if cand in latest_user_text or (cand == "wayanad" and ("wayand" in latest_user_text or "waynad" in latest_user_text)):
-                active_district = cand.capitalize()
-                break
+        # Context block generated from DataTrustContext (§7)
+        trust_block = build_compact_context_block(plan.trust, plan.entities.districts) if plan.trust else ""
 
         # Construct messages payload
         messages_payload: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        # Add context banner
         ctx_banner = (
-            f"CURRENT CONTEXT: District={active_district}, "
+            f"CURRENT CONTEXT: District={active_district or 'not specified'}, "
             f"HabitationID={request.habitation_id or 'None'}, "
             f"SiteID={request.site_id or 'None'}, "
-            f"ScreeningMode={request.screening_mode}"
+            f"ScreeningMode={request.screening_mode}\n"
+            f"DATA TRUST CONTEXT:\n{trust_block}"
         )
         messages_payload.append({"role": "system", "content": ctx_banner})
 
         for m in request.messages:
             messages_payload.append({"role": m.role, "content": m.content})
 
-        tools_spec = self._get_tools_spec()
+        # Least privilege: Expose ONLY plan.toolset to Groq (§4.5)
+        tools_spec = filter_tools_spec(self._get_tools_spec(), plan.toolset)
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -1359,24 +1618,30 @@ class RelocationChatAssistantService:
 
         try:
             with httpx.Client(timeout=14.0) as client:
-                max_tool_rounds = 4
+                max_tool_rounds = plan.max_rounds
                 current_round = 0
 
                 while current_round < max_tool_rounds:
                     current_round += 1
-                    req_body = {
+                    req_body: Dict[str, Any] = {
                         "model": settings.GROQ_MODEL,
                         "messages": messages_payload,
-                        "tools": tools_spec,
-                        "tool_choice": "auto" if current_round < max_tool_rounds else "none",
                         "temperature": 0.2,
                         "max_tokens": 1024,
                     }
+                    if tools_spec:
+                        req_body["tools"] = tools_spec
+                        req_body["tool_choice"] = "auto" if current_round < max_tool_rounds else "none"
+
                     resp = self._call_groq_api(client, req_body, headers)
 
                     if resp.status_code != 200:
                         logger.warning("Groq API returned HTTP %d: %s. Using fallback.", resp.status_code, resp.text)
-                        return self._offline_fallback_synthesis(request, error_reason=f"Groq API returned HTTP {resp.status_code}")
+                        return self._offline_fallback_synthesis(
+                            request,
+                            error_reason=f"Groq API returned HTTP {resp.status_code}",
+                            plan=plan,
+                        )
 
                     data = resp.json()
                     choice = data["choices"][0]["message"]
@@ -1384,7 +1649,7 @@ class RelocationChatAssistantService:
                     # If model did not call tools, it has delivered its final synthesized reply
                     if not choice.get("tool_calls"):
                         final_text = choice.get("content", "")
-                        final_text = self._verify_and_guard_answer(final_text, executed_tools, grounding_data)
+                        final_text = self._finalize_reply(final_text, executed_tools, grounding_data)
                         return RelocationChatResponse(
                             reply=final_text,
                             tools_called=executed_tools,
@@ -1394,6 +1659,9 @@ class RelocationChatAssistantService:
                             fallback_used=False,
                             model=settings.GROQ_MODEL,
                             district=active_district,
+                            intent=plan.intent.value,
+                            plan_summary=plan.summary,
+                            data_trust=plan.trust.model_dump() if plan.trust else None,
                         )
 
                     # Otherwise, execute all tool calls in this round
@@ -1406,15 +1674,16 @@ class RelocationChatAssistantService:
                             fn_args = {}
 
                         # Ensure district argument is populated if omitted by LLM
-                        if "district" in fn_args and not fn_args["district"]:
-                            fn_args["district"] = active_district
-                        elif fn_name in ["list_urgent_villages", "compare_relocation_plans", "assess_candidate_sites_suitability"] and "district" not in fn_args:
-                            fn_args["district"] = active_district
+                        if active_district:
+                            if "district" in fn_args and not fn_args["district"]:
+                                fn_args["district"] = active_district
+                            elif fn_name in ["list_urgent_villages", "compare_relocation_plans", "assess_candidate_sites_suitability"] and "district" not in fn_args:
+                                fn_args["district"] = active_district
 
                         executed_tools.append(fn_name)
 
-                        # Execute local tool
-                        tool_res, cits, exec_rec = self._execute_tool(fn_name, fn_args)
+                        # Execute local tool with policy enforcement (§4.5)
+                        tool_res, cits, exec_rec = self._execute_tool(fn_name, fn_args, allowed_tools=plan.toolset)
                         collected_citations.extend(cits)
                         tool_executions.append(exec_rec)
                         
@@ -1440,7 +1709,7 @@ class RelocationChatAssistantService:
                 final_resp = self._call_groq_api(client, final_req, headers)
                 if final_resp.status_code == 200:
                     final_choice = final_resp.json()["choices"][0]["message"]
-                    final_text = self._verify_and_guard_answer(final_choice.get("content", ""), executed_tools, grounding_data)
+                    final_text = self._finalize_reply(final_choice.get("content", ""), executed_tools, grounding_data)
                     return RelocationChatResponse(
                         reply=final_text,
                         tools_called=executed_tools,
@@ -1450,10 +1719,21 @@ class RelocationChatAssistantService:
                         fallback_used=False,
                         model=settings.GROQ_MODEL,
                         district=active_district,
+                        intent=plan.intent.value,
+                        plan_summary=plan.summary,
+                        data_trust=plan.trust.model_dump() if plan.trust else None,
                     )
                 else:
-                    return self._offline_fallback_synthesis(request, error_reason="Tool loop completed but final synthesis call failed.")
+                    return self._offline_fallback_synthesis(
+                        request,
+                        error_reason="Tool loop completed but final synthesis call failed.",
+                        plan=plan,
+                    )
 
         except Exception as e:
             logger.exception("Error connecting to Groq API: %s. Using grounded fallback.", e)
-            return self._offline_fallback_synthesis(request, error_reason=f"Network error or timeout: {str(e)}")
+            return self._offline_fallback_synthesis(
+                request,
+                error_reason=f"Network error or timeout: {str(e)}",
+                plan=plan,
+            )

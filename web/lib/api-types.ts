@@ -824,6 +824,15 @@ export interface components {
             has_group_split: boolean;
             /** Split Details */
             split_details?: string | null;
+            /** @description Hazard regime of the source habitation. */
+            habitation_regime?: components["schemas"]["HazardRegime"] | null;
+            /**
+             * @description Pathway implied by the source regime; char-belt households are resettled on the mainland.
+             * @default not_applicable
+             */
+            relocation_pathway: components["schemas"]["RelocationPathway"];
+            /** @description Hazard regime at the destination site (never char_belt or channel). */
+            site_regime?: components["schemas"]["HazardRegime"] | null;
         };
         /**
          * AllocationBenchmarkComparisonItem
@@ -973,6 +982,11 @@ export interface components {
             /** Group Split Warnings */
             group_split_warnings?: string[];
             /**
+             * Regime Breakdown
+             * @description Outcome per source hazard regime (char belt first).
+             */
+            regime_breakdown?: components["schemas"]["AllocationRegimeBreakdownDTO"][];
+            /**
              * Screening Caveats
              * @description Assumptions this run relied on (unverified tenure, provisional land-only capacity).
              */
@@ -982,6 +996,24 @@ export interface components {
              * @default Screening Grade: Cell-level screening and prioritisation tool. Geotechnical investigation, hydraulic study, and community consultation required before executing relocation orders.
              */
             screening_grade: string;
+        };
+        /**
+         * AllocationRegimeBreakdownDTO
+         * @description Demand and outcome for the habitations of one hazard regime.
+         */
+        AllocationRegimeBreakdownDTO: {
+            /** @description None for habitations with no regime data. */
+            regime?: components["schemas"]["HazardRegime"] | null;
+            /** @default not_applicable */
+            relocation_pathway: components["schemas"]["RelocationPathway"];
+            /** Habitation Count */
+            habitation_count: number;
+            /** Demand Households */
+            demand_households: number;
+            /** Relocated Households */
+            relocated_households: number;
+            /** Unmet Households */
+            unmet_households: number;
         };
         /**
          * AugmentedCapacityDTO
@@ -1045,6 +1077,8 @@ export interface components {
             area_ha: number;
             /** @description Tenure status (government_revenue, private, tenure_unverified). */
             tenure: components["schemas"]["TenureType"];
+            /** @description Flood hazard regime at the site centroid. Char-belt and channel sites are never allocatable. */
+            hazard_regime?: components["schemas"]["HazardRegime"] | null;
             /**
              * Slope Mean
              * @description Mean terrain slope in degrees.
@@ -1131,6 +1165,8 @@ export interface components {
             area_ha: number;
             /** @description Tenure status (government_revenue, private, tenure_unverified). */
             tenure: components["schemas"]["TenureType"];
+            /** @description Flood hazard regime at the site centroid. Char-belt and channel sites are never allocatable. */
+            hazard_regime?: components["schemas"]["HazardRegime"] | null;
             /**
              * Slope Mean
              * @description Mean terrain slope in degrees.
@@ -1313,7 +1349,7 @@ export interface components {
             metric?: string | null;
             /**
              * Provenance
-             * @description Provenance grade ('authoritative', 'derived_unverified', 'external_gis').
+             * @description Provenance grade ('authoritative', 'derived_unverified', 'external_gis', 'synthetic_demo').
              * @default authoritative
              */
             provenance: string;
@@ -2173,6 +2209,10 @@ export interface components {
              * @default landslide
              */
             dominant_hazard: string;
+            /** @description Flood hazard regime of the habitation's cell (None when the district has no regime layer). */
+            hazard_regime?: components["schemas"]["HazardRegime"] | null;
+            /** @description mainland_resettlement (char belt), in_situ_or_nearby (floodplain) or not_applicable. */
+            relocation_pathway?: components["schemas"]["RelocationPathway"] | null;
             /**
              * Centroid
              * @description [longitude, latitude]
@@ -2234,6 +2274,8 @@ export interface components {
             hazard_intensity: number;
             /** Decayed Loss Score */
             decayed_loss_score: number;
+            hazard_regime?: components["schemas"]["HazardRegime"] | null;
+            relocation_pathway?: components["schemas"]["RelocationPathway"] | null;
             /**
              * Model Version
              * @default baseline-v1
@@ -3000,10 +3042,9 @@ export interface components {
             messages: components["schemas"]["ChatMessage"][];
             /**
              * District
-             * @description Active administrative district in focus.
-             * @default Barpeta
+             * @description Active administrative district in focus (page context). Omit when none is selected; the assistant then asks which district is meant.
              */
-            district: string | null;
+            district?: string | null;
             /**
              * Habitation Id
              * @description Optional focused habitation ID for targeted analysis.
@@ -3075,7 +3116,42 @@ export interface components {
              * @description District context of the response.
              */
             district?: string | null;
+            /**
+             * Intent
+             * @description Classified intent of the user prompt.
+             */
+            intent?: string | null;
+            /**
+             * Plan Summary
+             * @description Summary of the resolved query plan.
+             */
+            plan_summary?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Data Trust
+             * @description Data trust and quality metrics.
+             */
+            data_trust?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Prompt Version
+             * @description Version of the prompt template used.
+             */
+            prompt_version?: string | null;
+            /**
+             * Limits
+             * @description Deterministic limits and caveats.
+             */
+            limits?: string[] | null;
         };
+        /**
+         * RelocationPathway
+         * @description How a habitation's hazard regime shapes what can be done for it (flood model v0.2, Phase 2e).
+         * @enum {string}
+         */
+        RelocationPathway: "mainland_resettlement" | "in_situ_or_nearby" | "not_applicable";
         /**
          * Role
          * @description User identity roles for SETU-DRR authentication.
@@ -4367,6 +4443,8 @@ export interface operations {
                 admin?: number | null;
                 /** @description Filter by Triage Tier (Immediate, Short-term, Medium-term, Mitigate in situ) */
                 tier?: components["schemas"]["Tier"] | null;
+                /** @description Filter by flood hazard regime of the habitation's cell (floodplain, char_belt, channel). */
+                regime?: components["schemas"]["HazardRegime"] | null;
                 /** @description Ranking mode: 'urgency' (PS_j) or 'caseload' (PS_j * population) */
                 sort?: components["schemas"]["SortMode"];
                 /** @description Number of records per page (max 200). */

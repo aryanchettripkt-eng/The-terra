@@ -56,6 +56,7 @@ from pipeline.relocation.eligibility_mask import (
     polygonize_mask,
 )
 from pipeline.relocation.landcover import class_fractions_on_grid
+from pipeline.relocation.regime_mask import load_blocked_regime_mask
 
 logger = logging.getLogger("setu_pipeline.derive_candidate_sites")
 
@@ -144,6 +145,16 @@ def derive_from_rasters(
         dtype=np.uint8,
     ).astype(bool)
 
+    flood_parquet = (
+        REPO_ROOT / "data" / "processed" / "flood" / district_key.lower() / "flood_susceptibility_h3_res8.parquet"
+    )
+    blocked_regime_mask = load_blocked_regime_mask(flood_parquet, susceptibility.shape, transform, crs)
+    if blocked_regime_mask is not None:
+        logger.info(
+            "Regime gate: %s pixels in char-belt / channel cells excluded",
+            f"{int(blocked_regime_mask.sum()):,}",
+        )
+
     mask, stats = build_eligibility_mask(
         susceptibility=susceptibility,
         slope=slope,
@@ -151,6 +162,7 @@ def derive_from_rasters(
         built_up_fraction=fractions["built_up"],
         permanent_water=permanent_water,
         aoi_mask=aoi_mask,
+        blocked_regime_mask=blocked_regime_mask,
         config=cfg,
     )
     logger.info(
@@ -183,6 +195,7 @@ def derive_from_rasters(
         "observed_pixels": stats.valid_pixels,
         "eligible_pct": round(stats.eligible_fraction * 100, 3),
         "rejected_by_gate": stats.rejected,
+        "regime_gate_pixels": int(blocked_regime_mask.sum()) if blocked_regime_mask is not None else None,
         "polygons": len(polygons),
         "total_area_ha": round(sum(p.area_ha for p in polygons), 1),
     }

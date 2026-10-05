@@ -5,7 +5,7 @@ Endpoints: GET /habitations/{id}/sites, GET /sites/{id}, POST /sites/{id}/capaci
 
 from typing import Optional, List, Dict, Any
 from pydantic import Field
-from core.enums import BindingConstraint, TenureType
+from core.enums import BindingConstraint, HazardRegime, TenureType
 from core.schemas.common import BaseSchema, SCREENING_GRADE_NOTICE
 
 
@@ -122,6 +122,10 @@ class CandidateSiteItem(BaseSchema):
     distance_km: float = Field(ge=0.0, description="Geodesic distance from source habitation in km.")
     area_ha: float = Field(ge=0.0, description="Total contiguous developable area in hectares.")
     tenure: TenureType = Field(description="Tenure status (government_revenue, private, tenure_unverified).")
+    hazard_regime: Optional[HazardRegime] = Field(
+        default=None,
+        description="Flood hazard regime at the site centroid. Char-belt and channel sites are never allocatable.",
+    )
     slope_mean: float = Field(default=0.0, description="Mean terrain slope in degrees.")
     mhi_max: Optional[float] = Field(
         default=None, ge=0.0, le=1.0, description="Maximum static multi-hazard index inside site (None if unmeasured)."

@@ -15,7 +15,7 @@ from api.dependencies import get_db, require_serving_version
 from api.routes.common import error_responses
 from api.services.habitations_service import HabitationsService
 from api.services.sites_service import SitesService
-from core.enums import Tier, SortMode
+from core.enums import HazardRegime, Tier, SortMode
 from core.schemas.common import PaginatedResponse
 from core.schemas.habitations import HabitationListItem, HabitationRiskDossier
 from core.schemas.sites import CandidateSiteItem
@@ -42,6 +42,10 @@ def get_habitations(
         None,
         description="Filter by Triage Tier (Immediate, Short-term, Medium-term, Mitigate in situ)",
     ),
+    regime: Optional[HazardRegime] = Query(
+        None,
+        description="Filter by flood hazard regime of the habitation's cell (floodplain, char_belt, channel).",
+    ),
     sort: SortMode = Query(
         SortMode.URGENCY,
         description="Ranking mode: 'urgency' (PS_j) or 'caseload' (PS_j * population)",
@@ -67,6 +71,7 @@ def get_habitations(
         sort=sort,
         limit=limit,
         offset=offset,
+        regime=regime,
     )
 
 

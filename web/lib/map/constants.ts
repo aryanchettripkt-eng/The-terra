@@ -1,6 +1,6 @@
 /** Map defaults, palettes and hazard metadata shared across the map feature. */
 
-import type { CoverageFlag, HazardRegime, HazardType } from '@/lib/api/types';
+import type { CoverageFlag, HazardRegime, HazardType, RelocationPathway } from '@/lib/api/types';
 
 export type RGBAColor = [number, number, number, number];
 
@@ -168,3 +168,10 @@ export const LEGACY_FLOOD_FORMULA = 'S_f = 0.5·F + 0.5·(1 − HAND/P99)';
 /** Distance at which river proximity stops contributing to the score (metres). */
 export const TRIBUTARY_DISTANCE_SCALE_M = 5000;
 export const MAINSTEM_DISTANCE_SCALE_M = 10000;
+
+/** What each regime's relocation pathway means, in officer-facing words. */
+export const PATHWAY_LABELS: Record<RelocationPathway, string> = {
+  mainland_resettlement: 'Mainland resettlement',
+  in_situ_or_nearby: 'In-situ mitigation or nearby site',
+  not_applicable: 'No regime pathway',
+};

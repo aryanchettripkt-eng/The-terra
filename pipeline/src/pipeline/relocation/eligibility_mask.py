@@ -10,6 +10,7 @@ only if all hold:
     AND NOT permanent water
     AND NOT tree cover      (physical proxy for forest land)
     AND NOT built-up        (without this the mask surfaces existing settlements as empty land)
+    AND NOT in a blocked hazard regime (char belt / river channel; see `regime_mask`)
 
 Cropland is deliberately *not* excluded. Some conversion is legitimate, so its fraction is
 recorded per polygon and carried forward as a flagged penalty rather than a hard gate.
@@ -92,6 +93,7 @@ def build_eligibility_mask(
     built_up_fraction: np.ndarray,
     permanent_water: np.ndarray,
     aoi_mask: Optional[np.ndarray] = None,
+    blocked_regime_mask: Optional[np.ndarray] = None,
     config: Optional[EligibilityMaskConfig] = None,
 ) -> tuple[np.ndarray, MaskStatistics]:
     """Returns a boolean eligibility mask plus per-gate rejection counts.
@@ -127,6 +129,10 @@ def build_eligibility_mask(
         "built_up": built_up_fraction < cfg.built_up_threshold,
         "permanent_water": permanent_water < cfg.permanent_water_threshold,
     }
+    if blocked_regime_mask is not None:
+        # A char or channel pixel may read as low-susceptibility (the v0.2 score discounts normal
+        # river water), so it needs its own gate: a destination must not be river ground.
+        gates["hazard_regime"] = ~blocked_regime_mask
 
     for name, passing in gates.items():
         stats.rejected[name] = int((observed & ~passing).sum())

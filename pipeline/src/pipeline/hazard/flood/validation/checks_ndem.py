@@ -235,7 +235,17 @@ def _ndem_audit(ndem_path: Path, bbox: tuple[float, ...], processing_crs: str) -
         return {"n_polygons": 0, "by_year": {}}
     proj = raw.to_crs(processing_crs)
     proj["area_km2"] = proj.geometry.area / 1e6
-    proj["gridcode_key"] = proj["gridcode"].map(lambda v: "NaN" if pd.isna(v) else str(float(v)))
+    if "gridcode" in proj.columns:
+        proj["gridcode_key"] = proj["gridcode"].map(lambda v: "NaN" if pd.isna(v) else str(float(v)))
+    elif "grid_code" in proj.columns:
+        proj["gridcode_key"] = proj["grid_code"].map(lambda v: "NaN" if pd.isna(v) else str(float(v)))
+    else:
+        proj["gridcode_key"] = "1.0"
+    if "year" not in proj.columns:
+        if "from_time" in proj.columns:
+            proj["year"] = pd.to_datetime(proj["from_time"], dayfirst=True, errors="coerce").dt.year.fillna(2021).astype(int)
+        else:
+            proj["year"] = 2021
     by_year: dict[str, Any] = {}
     for yr, grp in proj.groupby("year"):
         by_year[str(int(yr))] = {
@@ -291,17 +301,17 @@ def run_ndem_validation(
 
     # 2. Water fractions, hazard regime, river distances
     print("\n[2/6] Resolving water masks, hazard regimes and river distances...")
-    pw_raster = Path(config.permanent_water_raster_path)
-    if pw_raster.exists():
-        stats_pw = exactextract.exact_extract(str(pw_raster), gdf_cells_proj, ["mean"], output="pandas")
+    pw_str = str(config.permanent_water_raster_path or "").strip()
+    if pw_str and Path(pw_str).is_file():
+        stats_pw = exactextract.exact_extract(pw_str, gdf_cells_proj, ["mean"], output="pandas")
         gdf_cells_proj["permanent_water_fraction"] = stats_pw["mean"].fillna(0.0).to_numpy()
     elif "permanent_water_fraction" not in gdf_cells_proj.columns:
         print("  Notice: No permanent water raster available. Defaulting permanent_water_fraction to 0.0.")
         gdf_cells_proj["permanent_water_fraction"] = 0.0
 
-    bw_raster = Path(config.baseline_water_raster_path)
-    if bw_raster.exists():
-        stats_bw = exactextract.exact_extract(str(bw_raster), gdf_cells_proj, ["mean"], output="pandas")
+    bw_str = str(config.baseline_water_raster_path or "").strip()
+    if bw_str and Path(bw_str).is_file():
+        stats_bw = exactextract.exact_extract(bw_str, gdf_cells_proj, ["mean"], output="pandas")
         gdf_cells_proj["baseline_water_fraction"] = stats_bw["mean"].fillna(0.0).to_numpy()
     elif "baseline_water_fraction" not in gdf_cells_proj.columns:
         gdf_cells_proj["baseline_water_fraction"] = 0.0
@@ -353,14 +363,18 @@ def run_ndem_validation(
             print(f"  Warning: river distance extraction failed ({e}); river baselines skipped.")
 
     # Distance to JRC permanent water (diagnostic: circular with the JRC mask and SAR input)
-    dist_raster = Path(config.distance_to_river_raster_path) if config.distance_to_river_raster_path else Path()
-    if not dist_raster.exists() and pw_raster.exists():
-        candidate_dist = pw_raster.parent / f"{district_info.key}_distance_to_river.tif"
-        if not candidate_dist.exists():
+    dist_raster: Path | None = (
+        Path(config.distance_to_river_raster_path)
+        if config.distance_to_river_raster_path and Path(config.distance_to_river_raster_path).is_file()
+        else None
+    )
+    if dist_raster is None and pw_str and Path(pw_str).is_file():
+        candidate_dist = Path(pw_str).parent / f"{district_info.key}_distance_to_river.tif"
+        if not candidate_dist.is_file():
             from .baselines import generate_distance_to_water_raster
-            generate_distance_to_water_raster(pw_raster, candidate_dist)
+            generate_distance_to_water_raster(Path(pw_str), candidate_dist)
         dist_raster = candidate_dist
-    if dist_raster.exists():
+    if dist_raster is not None and dist_raster.is_file():
         stats_dist = exactextract.exact_extract(str(dist_raster), gdf_cells_proj, ["mean"], output="pandas")
         gdf_cells_proj["distance_to_river_m"] = stats_dist["mean"].to_numpy()
 

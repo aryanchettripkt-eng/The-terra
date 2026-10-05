@@ -918,6 +918,24 @@
             "description": "Filter by Triage Tier (Immediate, Short-term, Medium-term, Mitigate in situ)"
           },
           {
+            "name": "regime",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/HazardRegime"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by flood hazard regime of the habitation's cell (floodplain, char_belt, channel).",
+              "title": "Regime"
+            },
+            "description": "Filter by flood hazard regime of the habitation's cell (floodplain, char_belt, channel)."
+          },
+          {
             "name": "sort",
             "in": "query",
             "required": false,
@@ -3404,6 +3422,33 @@
               }
             ],
             "title": "Split Details"
+          },
+          "habitation_regime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HazardRegime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Hazard regime of the source habitation."
+          },
+          "relocation_pathway": {
+            "$ref": "#/components/schemas/RelocationPathway",
+            "description": "Pathway implied by the source regime; char-belt households are resettled on the mainland.",
+            "default": "not_applicable"
+          },
+          "site_regime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HazardRegime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Hazard regime at the destination site (never char_belt or channel)."
           }
         },
         "type": "object",
@@ -3659,6 +3704,14 @@
             "type": "array",
             "title": "Group Split Warnings"
           },
+          "regime_breakdown": {
+            "items": {
+              "$ref": "#/components/schemas/AllocationRegimeBreakdownDTO"
+            },
+            "type": "array",
+            "title": "Regime Breakdown",
+            "description": "Outcome per source hazard regime (char belt first)."
+          },
           "screening_caveats": {
             "items": {
               "type": "string"
@@ -3683,6 +3736,54 @@
         ],
         "title": "AllocationPlanResponse",
         "description": "Response payload for min-cost flow allocation solver (POST /plan/allocate)."
+      },
+      "AllocationRegimeBreakdownDTO": {
+        "properties": {
+          "regime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HazardRegime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "None for habitations with no regime data."
+          },
+          "relocation_pathway": {
+            "$ref": "#/components/schemas/RelocationPathway",
+            "default": "not_applicable"
+          },
+          "habitation_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Habitation Count"
+          },
+          "demand_households": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Demand Households"
+          },
+          "relocated_households": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Relocated Households"
+          },
+          "unmet_households": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Unmet Households"
+          }
+        },
+        "type": "object",
+        "required": [
+          "habitation_count",
+          "demand_households",
+          "relocated_households",
+          "unmet_households"
+        ],
+        "title": "AllocationRegimeBreakdownDTO",
+        "description": "Demand and outcome for the habitations of one hazard regime."
       },
       "AugmentedCapacityDTO": {
         "properties": {
@@ -3787,6 +3888,17 @@
           "tenure": {
             "$ref": "#/components/schemas/TenureType",
             "description": "Tenure status (government_revenue, private, tenure_unverified)."
+          },
+          "hazard_regime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HazardRegime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Flood hazard regime at the site centroid. Char-belt and channel sites are never allocatable."
           },
           "slope_mean": {
             "type": "number",
@@ -3936,6 +4048,17 @@
           "tenure": {
             "$ref": "#/components/schemas/TenureType",
             "description": "Tenure status (government_revenue, private, tenure_unverified)."
+          },
+          "hazard_regime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HazardRegime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Flood hazard regime at the site centroid. Char-belt and channel sites are never allocatable."
           },
           "slope_mean": {
             "type": "number",
@@ -4277,7 +4400,7 @@
           "provenance": {
             "type": "string",
             "title": "Provenance",
-            "description": "Provenance grade ('authoritative', 'derived_unverified', 'external_gis').",
+            "description": "Provenance grade ('authoritative', 'derived_unverified', 'external_gis', 'synthetic_demo').",
             "default": "authoritative"
           }
         },
@@ -6031,6 +6154,28 @@
             "title": "Dominant Hazard",
             "default": "landslide"
           },
+          "hazard_regime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HazardRegime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Flood hazard regime of the habitation's cell (None when the district has no regime layer)."
+          },
+          "relocation_pathway": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RelocationPathway"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "mainland_resettlement (char belt), in_situ_or_nearby (floodplain) or not_applicable."
+          },
           "centroid": {
             "items": {
               "type": "number"
@@ -6164,6 +6309,26 @@
           "decayed_loss_score": {
             "type": "number",
             "title": "Decayed Loss Score"
+          },
+          "hazard_regime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HazardRegime"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "relocation_pathway": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RelocationPathway"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "model_version": {
             "type": "string",
@@ -7413,8 +7578,7 @@
               }
             ],
             "title": "District",
-            "description": "Active administrative district in focus.",
-            "default": "Barpeta"
+            "description": "Active administrative district in focus (page context). Omit when none is selected; the assistant then asks which district is meant."
           },
           "habitation_id": {
             "anyOf": [
@@ -7526,6 +7690,71 @@
             ],
             "title": "District",
             "description": "District context of the response."
+          },
+          "intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent",
+            "description": "Classified intent of the user prompt."
+          },
+          "plan_summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Summary",
+            "description": "Summary of the resolved query plan."
+          },
+          "data_trust": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Trust",
+            "description": "Data trust and quality metrics."
+          },
+          "prompt_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Version",
+            "description": "Version of the prompt template used."
+          },
+          "limits": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limits",
+            "description": "Deterministic limits and caveats."
           }
         },
         "type": "object",
@@ -7534,6 +7763,16 @@
         ],
         "title": "RelocationChatResponse",
         "description": "Response payload from the relocation AI assistant."
+      },
+      "RelocationPathway": {
+        "type": "string",
+        "enum": [
+          "mainland_resettlement",
+          "in_situ_or_nearby",
+          "not_applicable"
+        ],
+        "title": "RelocationPathway",
+        "description": "How a habitation's hazard regime shapes what can be done for it (flood model v0.2, Phase 2e)."
       },
       "Role": {
         "type": "string",

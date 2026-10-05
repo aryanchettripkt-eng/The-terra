@@ -11,7 +11,13 @@ from typing import Any, Mapping, Optional, Sequence
 from ortools.graph.python import min_cost_flow
 from ortools.sat.python import cp_model
 
-from core.enums import Tier
+from core.domain.regime import (
+    DEFAULT_REGIME_POLICY,
+    RegimePolicyConfig,
+    is_destination_regime_allowed,
+    relocation_pathway_for,
+)
+from core.enums import RelocationPathway, Tier
 from core.schemas.common import SCREENING_GRADE_NOTICE
 
 
@@ -25,6 +31,8 @@ class HabitationDemand:
     tier: Tier
     lat: Optional[float] = None
     lon: Optional[float] = None
+    #: Hazard regime of the habitation's cell (`char_belt`, `floodplain`, ...); None when unknown.
+    regime: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +44,8 @@ class CandidateSiteCapacity:
     suitability: Optional[int] = None  # 0 to 100, None if unverified/unknown
     lat: Optional[float] = None
     lon: Optional[float] = None
+    #: Hazard regime at the site centroid. Blocked regimes are never offered as destinations.
+    regime: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -56,7 +66,8 @@ class AllocationConfig:
     allow_group_splits: bool = True
     cost_strategy: str = "linear_distance_v1"
     cost_strategy_version: str = "c_js-v1.0"
-    policy_version: str = "allocation-v1.0"
+    policy_version: str = "allocation-v1.1-regime"
+    regime_policy: RegimePolicyConfig = DEFAULT_REGIME_POLICY
 
 
 @dataclass
@@ -73,6 +84,9 @@ class AssignmentOutcome:
     site_suitability: Optional[int] = None
     has_group_split: bool = False
     split_details: Optional[str] = None
+    habitation_regime: Optional[str] = None
+    pathway: RelocationPathway = RelocationPathway.NOT_APPLICABLE
+    site_regime: Optional[str] = None
 
 
 @dataclass
@@ -86,7 +100,7 @@ class AllocationResult:
     solver_latency_ms: float
     assignments: list[AssignmentOutcome] = field(default_factory=list)
     group_split_warnings: list[str] = field(default_factory=list)
-    policy_version: str = "allocation-v1.0"
+    policy_version: str = "allocation-v1.1-regime"
     screening_grade: str = SCREENING_GRADE_NOTICE
 
 
@@ -328,6 +342,8 @@ class MinCostFlowAllocationSolver:
                 dist_km = dist_map.get((h.id, s.id))
                 if dist_km is None or dist_km > self.config.max_search_radius_km:
                     continue
+                if not is_destination_regime_allowed(s.regime, self.config.regime_policy):
+                    continue
 
                 edge_cap = min(h.demand_households, s.capacity_households)
                 unit_cost = compute_integer_edge_cost(
@@ -432,6 +448,9 @@ class MinCostFlowAllocationSolver:
                         site_suitability=s.suitability,
                         has_group_split=has_split,
                         split_details=split_detail,
+                        habitation_regime=h.regime,
+                        pathway=relocation_pathway_for(h.regime),
+                        site_regime=s.regime,
                     )
                 )
 
@@ -483,6 +502,8 @@ class MinCostFlowAllocationSolver:
             for s in sorted_sites:
                 dist_km = dist_map.get((h.id, s.id))
                 if dist_km is None or dist_km > self.config.max_search_radius_km:
+                    continue
+                if not is_destination_regime_allowed(s.regime, self.config.regime_policy):
                     continue
 
                 unit_cost = compute_integer_edge_cost(
@@ -578,6 +599,9 @@ class MinCostFlowAllocationSolver:
                             site_suitability=s.suitability,
                             has_group_split=False,
                             split_details=None,
+                            habitation_regime=h.regime,
+                            pathway=relocation_pathway_for(h.regime),
+                            site_regime=s.regime,
                         )
                     )
                     break
@@ -603,3 +627,50 @@ class MinCostFlowAllocationSolver:
             group_split_warnings=group_split_warnings,
             policy_version=self.config.policy_version,
         )
+
+
+@dataclass(frozen=True)
+class RegimeAllocationSummary:
+    """Demand, relocation and unmet households for the habitations of one hazard regime."""
+
+    regime: Optional[str]
+    pathway: RelocationPathway
+    habitation_count: int
+    demand_households: int
+    relocated_households: int
+
+    @property
+    def unmet_households(self) -> int:
+        return max(self.demand_households - self.relocated_households, 0)
+
+
+def summarize_allocation_by_regime(
+    habitations: Sequence[HabitationDemand],
+    assignments: Sequence[AssignmentOutcome],
+) -> list[RegimeAllocationSummary]:
+    """Splits a plan's outcome by the source habitation's regime, so officers can see whether
+    char-belt households actually reach mainland sites or are left unmet.
+
+    Regimes are ordered with char belt first (the most urgent pathway), then floodplain, then the rest.
+    """
+    relocated_by_hab: dict[int, int] = {}
+    for a in assignments:
+        relocated_by_hab[a.habitation_id] = relocated_by_hab.get(a.habitation_id, 0) + a.households
+
+    groups: dict[Optional[str], list[HabitationDemand]] = {}
+    for h in habitations:
+        if h.demand_households > 0:
+            groups.setdefault(h.regime, []).append(h)
+
+    order = {"char_belt": 0, "floodplain": 1, "channel": 2}
+    summaries = [
+        RegimeAllocationSummary(
+            regime=regime,
+            pathway=relocation_pathway_for(regime),
+            habitation_count=len(group),
+            demand_households=sum(h.demand_households for h in group),
+            relocated_households=sum(min(relocated_by_hab.get(h.id, 0), h.demand_households) for h in group),
+        )
+        for regime, group in groups.items()
+    ]
+    return sorted(summaries, key=lambda x: (order.get(x.regime or "", 3), x.regime or ""))

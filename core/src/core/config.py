@@ -60,6 +60,24 @@ class Settings(BaseSettings):
         description="Base URL for Groq OpenAI-compatible API.",
     )
 
+    # Chat Orchestrator Settings (Phase 1)
+    CHAT_MAX_ROUNDS: int = Field(
+        default=3,
+        description="Maximum tool rounds for the chat orchestrator LLM loop.",
+    )
+    CHAT_CLASSIFIER: str = Field(
+        default="rules",
+        description="Classifier mode: 'rules' or 'hybrid'.",
+    )
+    CHAT_CONFIDENCE_THRESHOLD: float = Field(
+        default=0.7,
+        description="Confidence threshold below which broad toolset is used.",
+    )
+    CHAT_TRUST_CACHE_TTL_SECONDS: int = Field(
+        default=300,
+        description="TTL for cached DataTrustContext in seconds.",
+    )
+
     # Forecast Scheduler & Retention (Phase B8)
     FORECAST_SCHEDULER_ENABLED: bool = Field(
         default=False,

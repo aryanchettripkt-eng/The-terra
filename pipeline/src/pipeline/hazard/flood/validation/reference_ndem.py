@@ -57,6 +57,16 @@ def load_ndem_polygons(
         clip_box = box(min_lon, min_lat, max_lon, max_lat)
         gdf = gdf[gdf.intersects(clip_box)].copy()
 
+    # Ensure 'year' column exists
+    if "year" not in gdf.columns:
+        if "from_time" in gdf.columns:
+            gdf["year"] = pd.to_datetime(gdf["from_time"], dayfirst=True, errors="coerce").dt.year.fillna(2021).astype(int)
+        else:
+            import re
+            m = re.search(r"(19\d\d|20\d\d)", path.stem)
+            default_year = int(m.group(1)) if m else 2021
+            gdf["year"] = default_year
+
     # Filter out gridcode == 0.0 background
     if filter_gridcode and "gridcode" in gdf.columns:
         valid_flood_mask = gdf["gridcode"].isna() | (gdf["gridcode"] != 0.0)

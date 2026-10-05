@@ -95,6 +95,10 @@ class CandidateSitePolicy:
     #: hazard verification caveats. Order-grade mode leaves this False so unmeasured hazard is
     #: never assumed safe.
     allow_unmeasured_hazard: bool = False
+    #: A relocation destination may not sit in these hazard regimes: a char belt or river channel
+    #: is the source of the problem, not a place to resettle onto. A site with no regime (district
+    #: without a regime layer) is not blocked. Mirrors `RegimePolicyConfig.blocked_destination_regimes`.
+    blocked_hazard_regimes: tuple[str, ...] = ("char_belt", "channel")
     policy_version: str = "site-eligibility-v1.2"
 
 
@@ -362,6 +366,7 @@ class CapacityEngine:
         distance_km: Optional[float] = None,
         require_distance: bool = False,
         policy: Optional[CandidateSitePolicy] = None,
+        hazard_regime: Optional[str] = None,
     ) -> EligibilityResult:
         """Evaluates candidate site against deterministic policy eligibility criteria.
         
@@ -453,6 +458,12 @@ class CapacityEngine:
                     rejection_reasons.append("Surface water body status is missing or unverified")
             elif is_water_body:
                 rejection_reasons.append("Site overlaps surface water body")
+
+        # Hazard regime: never resettle onto a char belt or channel (Phase 2e)
+        if hazard_regime is not None and str(hazard_regime) in p.blocked_hazard_regimes:
+            rejection_reasons.append(
+                f"Site lies in the {str(hazard_regime).replace('_', ' ')} hazard regime, which is not a viable resettlement destination"
+            )
 
         # Spatial search radius check
         if distance_km is None:

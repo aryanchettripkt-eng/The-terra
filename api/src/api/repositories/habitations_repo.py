@@ -22,6 +22,7 @@ class HabitationsRepository:
         sort: SortMode = SortMode.URGENCY,
         limit: Optional[int] = 50,
         offset: int = 0,
+        regime: Optional[str] = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Queries habitations in a single query using window count and indexed ordering."""
         conditions = ["1=1"]
@@ -49,6 +50,10 @@ class HabitationsRepository:
         if tier is not None:
             conditions.append("hr.tier = :tier")
             params["tier"] = tier
+
+        if regime is not None:
+            conditions.append("hr.hazard_regime = :regime")
+            params["regime"] = regime
 
         where_clause = " AND ".join(conditions)
 
@@ -81,6 +86,8 @@ class HabitationsRepository:
                 hr.priority_score,
                 hr.caseload_score,
                 hr.tier,
+                hr.hazard_regime,
+                hr.relocation_pathway,
                 hr.triage_rationale,
                 hr.contributing_factors,
                 hr.hazard_intensity,
@@ -147,6 +154,8 @@ class HabitationsRepository:
                 hr.priority_score,
                 hr.caseload_score,
                 hr.tier,
+                hr.hazard_regime,
+                hr.relocation_pathway,
                 hr.triage_rationale,
                 hr.contributing_factors,
                 hr.hazard_intensity,

@@ -5,9 +5,11 @@ import { useGSAP } from '@gsap/react';
 import gsap from 'gsap';
 
 import { M3_DURATION, M3_EASE } from '@/lib/motion/m3';
+import { RegimeChip } from '@/components/common/RegimeChip';
 import { usePrefersReducedMotion } from '@/lib/hooks/usePrefersReducedMotion';
 import type { HabitationListItem } from '@/lib/api/types';
 import { formatCount, formatPercent, formatScore } from '@/lib/map/format';
+import { PATHWAY_LABELS } from '@/lib/map/constants';
 
 import { TierBadge } from '../TierBadge';
 
@@ -15,6 +17,8 @@ export interface HabitationQueueRowProps {
   habitation: HabitationListItem;
   rank: number;
   isSelected?: boolean;
+  /** Shows the habitation's hazard regime as a chip beside its tier. */
+  showRegime?: boolean;
   onSelect?: (habitation: HabitationListItem) => void;
   className?: string;
   classNames?: {
@@ -35,6 +39,7 @@ export const HabitationQueueRow = ({
   habitation,
   rank,
   isSelected = false,
+  showRegime = true,
   onSelect,
   className = '',
   classNames = {},
@@ -122,6 +127,17 @@ export const HabitationQueueRow = ({
         >
           {habitation.name}
         </span>
+        {showRegime && habitation.hazard_regime ? (
+          <RegimeChip
+            regime={habitation.hazard_regime}
+            showLabel={false}
+            title={
+              habitation.relocation_pathway
+                ? `${habitation.hazard_regime.replace('_', ' ')} · ${PATHWAY_LABELS[habitation.relocation_pathway]}`
+                : undefined
+            }
+          />
+        ) : null}
         <div data-tier-breathing={isImmediate ? '' : undefined}>
           <TierBadge tier={habitation.tier} />
         </div>

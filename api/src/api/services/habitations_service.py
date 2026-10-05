@@ -10,7 +10,8 @@ from datetime import date, datetime, timezone
 from typing import Optional, Any
 from sqlalchemy.orm import Session
 
-from core.enums import Tier, SortMode
+from core.domain.regime import normalize_regime, relocation_pathway_for
+from core.enums import HazardRegime, RelocationPathway, Tier, SortMode
 from core.errors import HabitationNotFoundError
 from core.domain.priority import (
     PriorityScoringConfig,
@@ -51,6 +52,18 @@ class HabitationsService:
             triage_config=TriageRuleConfig(),
         )
 
+    @staticmethod
+    def _pathway(row: dict[str, Any]) -> Optional[RelocationPathway]:
+        """Persisted pathway, else the one implied by the regime; None when the row has no regime."""
+        persisted = row.get("relocation_pathway")
+        if persisted:
+            try:
+                return RelocationPathway(persisted)
+            except ValueError:
+                pass
+        regime = normalize_regime(row.get("hazard_regime"))
+        return relocation_pathway_for(regime) if regime else None
+
     def get_habitations(
         self,
         admin: Optional[int] = None,
@@ -58,6 +71,7 @@ class HabitationsService:
         sort: SortMode = SortMode.URGENCY,
         limit: int = 50,
         offset: int = 0,
+        regime: Optional[HazardRegime] = None,
     ) -> PaginatedResponse[HabitationListItem]:
         """Returns prioritized queue of habitations with dual urgency/caseload sorting."""
         clamped_limit = min(max(1, limit), 200)
@@ -70,6 +84,7 @@ class HabitationsService:
             sort=sort,
             limit=clamped_limit,
             offset=offset,
+            regime=regime.value if regime else None,
         )
 
         items = []
@@ -123,6 +138,7 @@ class HabitationsService:
                     mitigation_cost=float(m_cost) if m_cost is not None else None,
                     relocation_cost=float(r_cost) if r_cost is not None else None,
                     adverse_trend=bool(adv_trend) if adv_trend is not None else None,
+                    regime=r.get("hazard_regime"),
                 )
 
                 ps = eval_result["priority_score"]
@@ -149,6 +165,8 @@ class HabitationsService:
                     tier=tier_class,
                     prz_overlap_pct=prz_overlap,
                     dominant_hazard=dominant_hazard,
+                    hazard_regime=normalize_regime(r.get("hazard_regime")),
+                    relocation_pathway=self._pathway(r),
                     centroid=[r["lon"], r["lat"]],
                     model_version=model_ver,
                     scoring_version=scoring_ver,
@@ -219,6 +237,7 @@ class HabitationsService:
             mitigation_cost=float(m_cost) if m_cost is not None else None,
             relocation_cost=float(r_cost) if r_cost is not None else None,
             adverse_trend=adv_trend,
+            regime=r.get("hazard_regime"),
         )
 
         raw_ps = r.get("priority_score")
@@ -274,6 +293,8 @@ class HabitationsService:
             prz_overlap_pct=prz_overlap,
             hazard_intensity=hazard_intensity,
             decayed_loss_score=decayed_loss,
+            hazard_regime=normalize_regime(r.get("hazard_regime")),
+            relocation_pathway=self._pathway(r),
             model_version=r.get("model_version") or "baseline-v1",
             scoring_version=r.get("scoring_version") or self.scoring_config.scoring_version,
             dataset_version=r.get("dataset_version") or "v1.0",

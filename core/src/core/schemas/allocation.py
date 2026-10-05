@@ -7,7 +7,7 @@ from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime
 from pydantic import Field
-from core.enums import Tier
+from core.enums import HazardRegime, RelocationPathway, Tier
 from core.schemas.common import BaseSchema, SCREENING_GRADE_NOTICE
 
 
@@ -54,6 +54,27 @@ class AllocationAssignmentDTO(BaseSchema):
     )
     has_group_split: bool = False
     split_details: Optional[str] = None
+    habitation_regime: Optional[HazardRegime] = Field(
+        default=None, description="Hazard regime of the source habitation."
+    )
+    relocation_pathway: RelocationPathway = Field(
+        default=RelocationPathway.NOT_APPLICABLE,
+        description="Pathway implied by the source regime; char-belt households are resettled on the mainland.",
+    )
+    site_regime: Optional[HazardRegime] = Field(
+        default=None, description="Hazard regime at the destination site (never char_belt or channel)."
+    )
+
+
+class AllocationRegimeBreakdownDTO(BaseSchema):
+    """Demand and outcome for the habitations of one hazard regime."""
+
+    regime: Optional[HazardRegime] = Field(default=None, description="None for habitations with no regime data.")
+    relocation_pathway: RelocationPathway = RelocationPathway.NOT_APPLICABLE
+    habitation_count: int = Field(ge=0)
+    demand_households: int = Field(ge=0)
+    relocated_households: int = Field(ge=0)
+    unmet_households: int = Field(ge=0)
 
 
 class AllocationPlanResponse(BaseSchema):
@@ -67,6 +88,10 @@ class AllocationPlanResponse(BaseSchema):
     solver_latency_ms: float
     assignments: List[AllocationAssignmentDTO] = Field(default_factory=list)
     group_split_warnings: List[str] = Field(default_factory=list)
+    regime_breakdown: List[AllocationRegimeBreakdownDTO] = Field(
+        default_factory=list,
+        description="Outcome per source hazard regime (char belt first).",
+    )
     screening_caveats: List[str] = Field(
         default_factory=list,
         description="Assumptions this run relied on (unverified tenure, provisional land-only capacity).",

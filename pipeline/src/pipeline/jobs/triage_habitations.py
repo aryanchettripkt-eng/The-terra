@@ -36,12 +36,19 @@ from core.domain.priority import (
     compute_priority_score,
     evaluate_triage_with_rationale,
 )
-from core.enums import Tier
+from core.domain.regime import (
+    adjust_tier_for_regime,
+    apply_regime_urgency,
+    normalize_regime,
+    relocation_pathway_for,
+)
+from core.enums import HazardRegime, Tier
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("setu_pipeline.triage_habitations")
 
-JOB_VERSION = "triage-v1.0"
+JOB_VERSION = "triage-v1.1-regime"
+SCORING_VERSION = "priority-v1.1-regime"
 DATASET_VERSION = "h3-hazard-static-v1.0"
 DEFAULT_VULNERABILITY_ANCHOR = 0.5
 
@@ -83,18 +90,27 @@ def triage_district_habitations(
     # 2. Pre-cache hazard_static for this admin_id via grid_cell
     hazard_rows = conn.execute(
         text("""
-            SELECT hs.h3, hs.susceptibility, hs.hazard_type
+            SELECT hs.h3, hs.susceptibility, hs.hazard_type, hs.quality_flag, f.hazard_regime
             FROM hazard_static hs
             JOIN grid_cell gc ON hs.h3 = gc.h3
+            LEFT JOIN hazard_static_flood f ON f.h3 = hs.h3
             WHERE gc.admin_id = :admin_id;
         """),
         {"admin_id": admin_id},
     ).mappings().all()
 
     h3_hazard_map: dict[int, float] = {}
+    h3_regime_map: dict[int, HazardRegime] = {}
     dominant_hazard = "riverine_flood"
     for hr in hazard_rows:
-        h3_hazard_map[int(hr["h3"])] = float(hr["susceptibility"])
+        cell_int = int(hr["h3"])
+        regime = normalize_regime(hr.get("hazard_regime"))
+        if regime is not None:
+            h3_regime_map[cell_int] = regime
+        # A channel cell carries a placeholder 0.0, not a score. Leaving it out sends a habitation
+        # mapped onto the channel to the neighbour average instead of reading as perfectly safe.
+        if hr.get("quality_flag") != "channel_excluded":
+            h3_hazard_map[cell_int] = float(hr["susceptibility"])
         if hr.get("hazard_type"):
             dominant_hazard = str(hr["hazard_type"])
 
@@ -104,6 +120,7 @@ def triage_district_habitations(
     )
 
     triage_counts: dict[str, int] = {}
+    regime_counts: dict[str, dict[str, int]] = {}
     updated_count = 0
     triage_rules = TriageRuleConfig()
 
@@ -151,13 +168,20 @@ def triage_district_habitations(
             hazard_intensity = 0.35
             prz_overlap_pct = 0.0
 
-        # Calculate Priority Score (FR-6.1)
+        # Hazard regime of the habitation's own cell; None when the district has no regime layer.
+        habitation_regime: Optional[HazardRegime] = None
+        if lat is not None and lon is not None and h3_regime_map:
+            habitation_regime = h3_regime_map.get(h3.str_to_int(h3.latlng_to_cell(lat, lon, 8)))
+        pathway = relocation_pathway_for(habitation_regime)
+
+        # Calculate Priority Score (FR-6.1), with the regime's urgency uplift (Phase 2e)
         pop_fraction_in_prz = prz_overlap_pct / 100.0
-        computed_ps = compute_priority_score(
+        base_ps = compute_priority_score(
             hazard_intensity=hazard_intensity,
             pop_fraction_in_prz=pop_fraction_in_prz,
             vulnerability_index=vulnerability_anchor,
         )
+        computed_ps = apply_regime_urgency(base_ps, habitation_regime)
 
         # Classify Triage Tier (PRD §6.7)
         # 1. Check if external partner GIS recommendation specified a tier (e.g. Barpeta primary settlements)
@@ -168,6 +192,10 @@ def triage_district_habitations(
             {"name": "Population in permanent red zone", "contribution": round(pop_fraction_in_prz, 4), "type": "exposure"},
             {"name": "Social Vulnerability anchor", "contribution": vulnerability_anchor, "type": "vulnerability"},
         ]
+        if habitation_regime is not None:
+            factors.append(
+                {"name": f"Hazard regime: {habitation_regime.value}", "contribution": round(computed_ps - base_ps, 4), "type": "regime"}
+            )
 
         if external_tier_str:
             try:
@@ -210,9 +238,19 @@ def triage_district_habitations(
                     assigned_tier = None
                     assigned_rationale = "Unclassified / Monitoring: Settlement does not meet criteria for permanent relocation."
 
+        # Planning-horizon rules apply to computed tiers only; an external partner's tier stands.
+        if not external_tier_str:
+            adjustment = adjust_tier_for_regime(assigned_tier, habitation_regime)
+            if adjustment.changed:
+                assigned_tier = adjustment.tier
+                assigned_rationale = f"{assigned_rationale} {adjustment.note}".strip()
+
         tier_str = assigned_tier.value if assigned_tier is not None else None
         tier_key = tier_str or "monitoring_none"
         triage_counts[tier_key] = triage_counts.get(tier_key, 0) + 1
+        regime_key = habitation_regime.value if habitation_regime else "no_regime"
+        regime_counts.setdefault(regime_key, {})
+        regime_counts[regime_key][tier_key] = regime_counts[regime_key].get(tier_key, 0) + 1
 
         caseload = round(computed_ps * pop, 2)
 
@@ -226,14 +264,16 @@ def triage_district_habitations(
                         priority_score, caseload_score, tier, triage_rationale,
                         contributing_factors, dominant_hazard, model_version, scoring_version,
                         dataset_version, data_quality, confidence, calculated_at, pipeline_run_id,
-                        active_deformation, fatal_event_last_3_monsoons, adverse_trend
+                        active_deformation, fatal_event_last_3_monsoons, adverse_trend,
+                        hazard_regime, relocation_pathway
                     ) VALUES (
                         :hab_id, :admin_id, :pop, :hh,
                         :hazard, :prz, 0.0, :v,
                         :ps, :caseload, :tier, :rationale,
-                        CAST(:factors AS jsonb), :dominant, :model_ver, 'priority-v1.0',
+                        CAST(:factors AS jsonb), :dominant, :model_ver, :scoring_ver,
                         :dataset_ver, 'derived', 0.85, :now, :run_id,
-                        FALSE, FALSE, :adverse
+                        FALSE, FALSE, :adverse,
+                        :regime, :pathway
                     )
                     ON CONFLICT (habitation_id) DO UPDATE SET
                         population = EXCLUDED.population,
@@ -244,6 +284,9 @@ def triage_district_habitations(
                         priority_score = EXCLUDED.priority_score,
                         caseload_score = EXCLUDED.caseload_score,
                         tier = EXCLUDED.tier,
+                        hazard_regime = EXCLUDED.hazard_regime,
+                        relocation_pathway = EXCLUDED.relocation_pathway,
+                        scoring_version = EXCLUDED.scoring_version,
                         triage_rationale = EXCLUDED.triage_rationale,
                         contributing_factors = EXCLUDED.contributing_factors,
                         calculated_at = EXCLUDED.calculated_at,
@@ -268,6 +311,9 @@ def triage_district_habitations(
                     "now": now,
                     "run_id": run_id,
                     "adverse": bool(hazard_intensity >= 0.45),
+                    "regime": habitation_regime.value if habitation_regime else None,
+                    "pathway": pathway.value if habitation_regime else None,
+                    "scoring_ver": SCORING_VERSION,
                 },
             )
 
@@ -288,6 +334,7 @@ def triage_district_habitations(
         "processed": len(hab_rows),
         "updated": updated_count,
         "tier_distribution": triage_counts,
+        "tier_distribution_by_regime": regime_counts,
         "pipeline_run_id": str(run_id),
     }
 

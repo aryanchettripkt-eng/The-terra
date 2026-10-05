@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
+from api.repositories.site_regime_sql import SITE_REGIME_JOIN
 from core.domain.capacity import CandidateSitePolicy
 
 
@@ -80,6 +81,7 @@ class SitesRepository:
                 hf.name as health_facility_name,
                 hf.facility_type as health_facility_type,
                 cs.metadata as metadata_info,
+                reg.hazard_regime,
                 ST_X(cs.centroid::geometry) as lon,
                 ST_Y(cs.centroid::geometry) as lat,
                 ST_Distance(h.geom_point::geography, cs.centroid::geography) / 1000.0 as distance_km
@@ -88,6 +90,7 @@ class SitesRepository:
               ON ST_DWithin(h.geom_point::geography, cs.centroid::geography, :radius_m)
             LEFT JOIN health_facility hf
               ON cs.primary_health_facility_id = hf.id
+            {SITE_REGIME_JOIN}
             WHERE {where_sql}
             ORDER BY cs.suitability DESC NULLS LAST, cs.cc_final DESC NULLS LAST, distance_km ASC, cs.id ASC;
         """

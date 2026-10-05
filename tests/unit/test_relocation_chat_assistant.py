@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from api.main import app
 from api.services.chat_assistant_service import RelocationChatAssistantService
+from core.config import settings
 from core.schemas.chat import (
     ChatMessage,
     RelocationChatRequest,
@@ -19,6 +20,20 @@ def mock_db_session():
     """Mock database session."""
     session = MagicMock()
     return session
+
+
+@pytest.fixture(autouse=True)
+def no_live_groq_key():
+    """No test may reach Groq: blank the key (a developer's .env may set one) unless a test opts in."""
+    with patch.object(settings, "GROQ_API_KEY", None):
+        yield
+
+
+@pytest.fixture
+def groq_key():
+    """Opt-in dummy key so the Groq code path runs against a patched `_call_groq_api` (no network)."""
+    with patch.object(settings, "GROQ_API_KEY", "test-key-not-real"):
+        yield
 
 
 def test_reject_system_role():
@@ -161,7 +176,7 @@ def test_offline_fallback_missing_infrastructure(mock_db_session):
     assert "Multi-Hazard Index (MHI) is unmeasured" in res.reply
 
 
-def test_answer_query_with_mocked_groq_llm(mock_db_session):
+def test_answer_query_with_mocked_groq_llm(mock_db_session, groq_key):
     """Test answer_query with fake LLM client so tests never touch the network."""
     import json
     service = RelocationChatAssistantService(mock_db_session)
@@ -283,7 +298,7 @@ def test_offline_fallback_site_suitability_assessment(mock_db_session):
     assert "assess_candidate_sites_suitability" in res.tools_called
 
 
-def test_multi_round_tool_chaining(mock_db_session):
+def test_multi_round_tool_chaining(mock_db_session, groq_key):
     """Verifies that the multi-round tool loop allows chaining sequential lookups."""
     import json
     service = RelocationChatAssistantService(mock_db_session)

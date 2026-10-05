@@ -20,6 +20,7 @@ from core.domain.capacity import (
     compute_carrying_capacity,
     compute_augmented_capacity,
 )
+from core.domain.regime import normalize_regime
 from core.enums import BindingConstraint, TenureType
 from core.errors import HabitationNotFoundError, SiteNotFoundError
 from core.schemas.common import PaginatedResponse
@@ -230,6 +231,7 @@ class SitesService:
                 distance_km=round(float(r.get("distance_km") if r.get("distance_km") is not None else 0.0), 2),
                 area_ha=round(float(r.get("area_ha") if r.get("area_ha") is not None else 0.0), 2),
                 tenure=tenure_enum,
+                hazard_regime=normalize_regime(r.get("hazard_regime")),
                 slope_mean=_truncate(float(r.get("slope_mean") if r.get("slope_mean") is not None else 0.0), 1),
                 mhi_max=_truncate(float(r["mhi_max"]), 3) if r.get("mhi_max") is not None else None,
                 suitability=suitability_val,

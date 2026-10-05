@@ -9,7 +9,9 @@ import { Button } from '@/components/ui';
 import { M3_DURATION, M3_EASE } from '@/lib/motion/m3';
 import { usePrefersReducedMotion } from '@/lib/hooks/usePrefersReducedMotion';
 import type { ApiError } from '@/lib/api/client';
-import type { HabitationListItem } from '@/lib/api/types';
+import type { HabitationListItem, HazardRegime } from '@/lib/api/types';
+import type { RegimeFilter } from '@/lib/hooks/useRankedCells';
+import { RegimeFilterBar } from '@/components/features/triage/RegimeFilterBar';
 
 import { HabitationQueueRow } from './HabitationQueueRow';
 import { HabitationQueueSkeleton } from './HabitationQueueSkeleton';
@@ -26,6 +28,9 @@ export interface HabitationQueueProps {
   description?: React.ReactNode;
   /** Controls rendered to the right of the title, such as a district filter. */
   actionSlot?: React.ReactNode;
+  /** Regime filter applied by the parent (server-side). Omit `onRegimeChange` to hide the chips. */
+  regime?: RegimeFilter;
+  onRegimeChange?: (regime: HazardRegime | undefined) => void;
   /** Callback to collapse the left panel. */
   onToggleCollapse?: () => void;
   className?: string;
@@ -54,6 +59,8 @@ export const HabitationQueue = ({
   title = 'Triage queue',
   description,
   actionSlot,
+  regime = 'all',
+  onRegimeChange,
   onToggleCollapse,
   className = '',
   classNames = {},
@@ -166,6 +173,13 @@ export const HabitationQueue = ({
           </button>
         ) : null}
       </div>
+
+      {onRegimeChange ? (
+        <RegimeFilterBar
+          selected={regime}
+          onChange={(next) => onRegimeChange(next === 'all' ? undefined : next)}
+        />
+      ) : null}
 
       {error ? (
         <ErrorState

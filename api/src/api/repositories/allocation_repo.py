@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from api.repositories.site_regime_sql import SITE_REGIME_JOIN
 from core.domain.capacity import CandidateSitePolicy
 
 
@@ -46,6 +47,8 @@ class AllocationRepository:
                 h.households,
                 h.population,
                 hr.tier,
+                hr.hazard_regime,
+                hr.relocation_pathway,
                 COALESCE(hr.priority_score, 0.5) as priority_score,
                 ST_X(h.geom_point::geometry) as lon,
                 ST_Y(h.geom_point::geometry) as lat
@@ -133,11 +136,13 @@ class AllocationRepository:
                 cs.slope_mean,
                 cs.mhi_max,
                 cs.metadata as metadata_info,
+                reg.hazard_regime,
                 ST_X(cs.centroid::geometry) as site_lon,
                 ST_Y(cs.centroid::geometry) as site_lat,
                 ST_Distance(h.geom_point::geography, cs.centroid::geography) / 1000.0 as distance_km
             FROM habitation h
             JOIN candidate_site cs ON true
+            {SITE_REGIME_JOIN}
             WHERE {where_sql}
             ORDER BY cs.id ASC;
         """
@@ -166,6 +171,7 @@ class AllocationRepository:
                     "slope_mean": float(r["slope_mean"]) if r.get("slope_mean") is not None else None,
                     "mhi_max": float(r["mhi_max"]) if r.get("mhi_max") is not None else None,
                     "metadata": r.get("metadata_info"),
+                    "hazard_regime": r.get("hazard_regime"),
                 }
             distances.append({
                 "habitation_id": r["habitation_id"],

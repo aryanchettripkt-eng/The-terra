@@ -1,5 +1,6 @@
 'use client';
 
+import { RegimeChip } from '@/components/common/RegimeChip';
 import { useRef } from 'react';
 import { useGSAP } from '@gsap/react';
 import gsap from 'gsap';
@@ -151,6 +152,7 @@ export const CandidateSiteCard = ({
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
+          {site.hazard_regime ? <RegimeChip regime={site.hazard_regime} showLabel={false} /> : null}
           {site.suitability != null ? (
             <Badge variant="info" size="sm" title="Composite suitability score (0–100)">
               {site.suitability}/100

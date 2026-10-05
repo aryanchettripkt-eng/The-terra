@@ -20,7 +20,9 @@ from core.domain.allocation import (
     HabitationDemand,
     HabitationSiteDistance,
     MinCostFlowAllocationSolver,
+    summarize_allocation_by_regime,
 )
+from core.domain.regime import normalize_regime, relocation_pathway_for
 from api.services.site_eligibility import evaluate_row_eligibility
 from core.domain.capacity import SCREENING_SITE_POLICY, CapacityEngine, CandidateSitePolicy
 from core.enums import Tier
@@ -29,6 +31,7 @@ from core.schemas.allocation import (
     AllocationAssignmentDTO,
     AllocationPlanRequest,
     AllocationPlanResponse,
+    AllocationRegimeBreakdownDTO,
 )
 
 logger = logging.getLogger("setu_api.allocation_service")
@@ -147,6 +150,7 @@ class AllocationService:
                     tier=tier_enum,
                     lat=r.get("lat"),
                     lon=r.get("lon"),
+                    regime=r.get("hazard_regime"),
                 )
             )
 
@@ -175,6 +179,7 @@ class AllocationService:
                 suitability=int(s["suitability"]) if s.get("suitability") is not None else None,
                 lat=s.get("lat"),
                 lon=s.get("lon"),
+                regime=s.get("hazard_regime"),
             )
             for s in site_rows
         ]
@@ -215,6 +220,9 @@ class AllocationService:
                     site_suitability=a.site_suitability,
                     has_group_split=a.has_group_split,
                     split_details=a.split_details,
+                    habitation_regime=normalize_regime(a.habitation_regime),
+                    relocation_pathway=a.pathway,
+                    site_regime=normalize_regime(a.site_regime),
                 )
             )
             raw_assignments_to_save.append({
@@ -229,6 +237,13 @@ class AllocationService:
             })
 
         caveats = self._screening_caveats(result.assignments, site_rows)
+        regime_summary = summarize_allocation_by_regime(hab_demands, result.assignments)
+        char_unmet = sum(x.unmet_households for x in regime_summary if x.regime == "char_belt")
+        if char_unmet:
+            caveats.append(
+                f"{char_unmet} char-belt household(s) are unmet: char-belt residents can only be resettled "
+                "on mainland sites, and none with capacity lies within the search radius."
+            )
 
         # 6. Persist allocation run in database
         try:
@@ -252,6 +267,17 @@ class AllocationService:
             solver_latency_ms=result.solver_latency_ms,
             assignments=dto_assignments,
             group_split_warnings=result.group_split_warnings,
+            regime_breakdown=[
+                AllocationRegimeBreakdownDTO(
+                    regime=normalize_regime(x.regime),
+                    relocation_pathway=x.pathway,
+                    habitation_count=x.habitation_count,
+                    demand_households=x.demand_households,
+                    relocated_households=x.relocated_households,
+                    unmet_households=x.unmet_households,
+                )
+                for x in regime_summary
+            ],
             screening_caveats=caveats,
             screening_grade=SCREENING_GRADE_NOTICE,
         )
@@ -339,6 +365,7 @@ class AllocationService:
                 suitability=int(s["suitability"]) if s.get("suitability") is not None else None,
                 lat=s.get("lat"),
                 lon=s.get("lon"),
+                regime=s.get("hazard_regime"),
             )
             for s in site_rows
         ]

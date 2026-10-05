@@ -11,6 +11,13 @@ from datetime import date
 from typing import Any, Mapping, Optional, Sequence
 
 from core.constants import LOSS_HALF_LIFE_YEARS, PRIORITY_GAMMA
+from core.domain.regime import (
+    DEFAULT_REGIME_POLICY,
+    RegimePolicyConfig,
+    adjust_tier_for_regime,
+    apply_regime_urgency,
+    relocation_pathway_for,
+)
 from core.enums import SortMode, Tier
 
 
@@ -27,6 +34,7 @@ class PriorityScoringConfig:
     loss_half_life_years: float = LOSS_HALF_LIFE_YEARS
     scoring_version: str = "priority-v1.0"
     formula_type: str = "multiplicative_v1"  # "multiplicative_v1", "linear_additive", "calibrated"
+    regime_policy: RegimePolicyConfig = DEFAULT_REGIME_POLICY
 
     def calculate_score(
         self,
@@ -34,8 +42,12 @@ class PriorityScoringConfig:
         pop_fraction_in_prz: float,
         vulnerability_index: float,
         decayed_loss: float = 0.0,
+        regime: Optional[str] = None,
     ) -> float:
-        """Calculates normalized priority score PS_j in [0.0, inf)."""
+        """Calculates normalized priority score PS_j in [0.0, inf).
+
+        `regime` applies the hazard-regime urgency uplift (char belt); omit it for the base score.
+        """
         h = min(max(float(hazard_intensity), 0.0), 1.0) * self.hazard_weight
         f = min(max(float(pop_fraction_in_prz), 0.0), 1.0) * self.exposure_weight
         v = min(max(float(vulnerability_index), 0.0), 1.0) * self.vulnerability_weight
@@ -49,7 +61,7 @@ class PriorityScoringConfig:
             base_risk = h * f * v
             score = base_risk * (1.0 + self.loss_gamma * l)
 
-        return round(float(score), 4)
+        return apply_regime_urgency(score, regime, self.regime_policy)
 
 
 @dataclass(frozen=True)
@@ -471,6 +483,7 @@ class PriorityScoringEngine:
         mitigation_cost: Optional[float] = None,
         relocation_cost: Optional[float] = None,
         adverse_trend: Optional[bool] = None,
+        regime: Optional[str] = None,
     ) -> dict[str, Any]:
         """Evaluates priority score, caseload, triage tier, and factors for a habitation."""
         from core.constants import CAUTION_MHI_MIN, PRZ_MHI_STATIC
@@ -482,6 +495,7 @@ class PriorityScoringEngine:
             pop_fraction_in_prz=pop_fraction_in_prz,
             vulnerability_index=vulnerability_index,
             decayed_loss=decayed_loss,
+            regime=regime,
         )
         caseload = round(ps * max(population, 0), 2)
 
@@ -505,6 +519,11 @@ class PriorityScoringEngine:
             adverse_trend=adverse_trend,
             rules=self.triage_config,
         )
+        adjustment = adjust_tier_for_regime(triage_res.tier, regime, self.scoring_config.regime_policy)
+        triage_res.tier = adjustment.tier
+        if adjustment.changed:
+            triage_res.rationale = f"{triage_res.rationale} {adjustment.note}"
+            triage_res.trigger_factors.append(adjustment.note)
 
         factors = [
             {"factor": "PRZ Built-up Exposure", "weight": round(pop_fraction_in_prz, 2), "method": "heuristic"},
@@ -520,4 +539,5 @@ class PriorityScoringEngine:
             "triage_rationale": triage_res.rationale,
             "contributing_factors": factors,
             "scoring_version": self.scoring_config.scoring_version,
+            "relocation_pathway": relocation_pathway_for(regime),
         }

@@ -115,5 +115,6 @@ def evaluate_row_eligibility(
         distance_km=distance_km,
         require_distance=require_distance,
         policy=policy,
+        hazard_regime=row.get("hazard_regime"),
         **extract_exclusion_flags(row),
     )

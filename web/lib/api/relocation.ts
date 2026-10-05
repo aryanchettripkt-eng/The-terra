@@ -6,6 +6,7 @@ import type {
   AllocationPlanResponse,
   CandidateSitePage,
   HabitationPage,
+  HazardRegime,
   HabitationRiskDossier,
   SiteCapacityOverrideRequest,
   SiteCapacityOverrideResponse,
@@ -18,6 +19,8 @@ export interface FetchHabitationsParams {
   tier?: Tier;
   /** Queue ordering; the API defaults to `urgency`. */
   sort?: 'urgency' | 'caseload';
+  /** Flood hazard regime of the habitation's cell. */
+  regime?: HazardRegime;
   limit?: number;
   offset?: number;
 }
@@ -27,8 +30,8 @@ export function fetchHabitations(
   params: FetchHabitationsParams = {},
   signal?: AbortSignal,
 ): Promise<HabitationPage> {
-  const { admin, tier, sort, limit = 50, offset = 0 } = params;
-  return apiGet<HabitationPage>('/habitations', { admin, tier, sort, limit, offset }, signal);
+  const { admin, tier, sort, regime, limit = 50, offset = 0 } = params;
+  return apiGet<HabitationPage>('/habitations', { admin, tier, sort, regime, limit, offset }, signal);
 }
 
 /** Full risk dossier for one habitation: vulnerability breakdown and triage rationale. */

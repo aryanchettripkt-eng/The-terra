@@ -29,18 +29,18 @@ interface QueueState {
 export function useHabitationQueue(
   options: UseHabitationQueueOptions = {},
 ): UseHabitationQueueResult {
-  const { admin, tier, sort, limit = 50, offset = 0, enabled = true } = options;
+  const { admin, tier, sort, regime, limit = 50, offset = 0, enabled = true } = options;
 
   const [state, setState] = useState<QueueState | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
 
-  const requestKey = [admin ?? '', tier ?? '', sort ?? '', limit, offset, reloadToken].join('|');
+  const requestKey = [admin ?? '', tier ?? '', sort ?? '', regime ?? '', limit, offset, reloadToken].join('|');
 
   useEffect(() => {
     if (!enabled) return;
     const controller = new AbortController();
 
-    fetchHabitations({ admin, tier, sort, limit, offset }, controller.signal)
+    fetchHabitations({ admin, tier, sort, regime, limit, offset }, controller.signal)
       .then((page) => {
         if (controller.signal.aborted) return;
         setState({ key: requestKey, habitations: page.items, total: page.total, error: null });
@@ -59,7 +59,7 @@ export function useHabitationQueue(
       });
 
     return () => controller.abort();
-  }, [requestKey, enabled, admin, tier, sort, limit, offset]);
+  }, [requestKey, enabled, admin, tier, sort, regime, limit, offset]);
 
   const isCurrent = state?.key === requestKey;
   const refetch = useCallback(() => setReloadToken((token) => token + 1), []);
