@@ -2,9 +2,10 @@ name: SETU-DRR Multi-District Live Forecast Automation
 
 on:
   schedule:
-    # Runs twice a day: 00:15 and 12:15 UTC (5:45 AM and 5:45 PM IST)
-    # Aligned 15 mins after ECMWF global forecast model publication
-    - cron: '15 0,12 * * *'
+    # Runs twice a day: 00:20 and 12:20 UTC (5:50 AM and 5:50 PM IST)
+    # Aligned ~20 mins after ECMWF global forecast model publication.
+    # Non-quarter-hour offset avoids peak GitHub runner queue delays.
+    - cron: '20 0,12 * * *'
   workflow_dispatch:
     inputs:
       district:
@@ -22,6 +23,30 @@ jobs:
     name: Trigger Live Forecast Ingestion
     runs-on: ubuntu-latest
     steps:
+      - name: Pre-Flight Warmup (Wake Render & NeonDB)
+        run: |
+          API_URL="${{ secrets.SETU_API_URL || 'https://the-dead-zone.onrender.com' }}"
+          echo "Warming up backend instance at $API_URL/health..."
+
+          # Render free instances spin down after 15m of inactivity.
+          # Poll up to 24 times every 5 seconds (120s max window) until HTTP 200 is confirmed.
+          READY=false
+          for i in $(seq 1 24); do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$API_URL/health" || echo "000")
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "Backend is warm and responsive (attempt $i)."
+              READY=true
+              break
+            fi
+            echo "Waiting for backend spin-up (attempt $i, status: $HTTP_STATUS)..."
+            sleep 5
+          done
+
+          if [ "$READY" != "true" ]; then
+            echo "::error::Backend did not wake up within 120s timeout window."
+            exit 1
+          fi
+
       - name: Send API Trigger Request
         run: |
           API_URL="${{ secrets.SETU_API_URL || 'https://the-dead-zone.onrender.com' }}"
@@ -31,8 +56,7 @@ jobs:
           fi
 
           echo "Triggering forecast ingestion at $API_URL/alerts/forecast/trigger..."
-          # max-time 180s accommodates Render Free Tier spin-up from cold sleep
-          RESPONSE=$(curl -s --max-time 180 --retry 2 --retry-delay 5 -w "\n%{http_code}" -X POST "$API_URL/alerts/forecast/trigger" \
+          RESPONSE=$(curl -s --max-time 60 --retry 3 --retry-delay 5 -w "\n%{http_code}" -X POST "$API_URL/alerts/forecast/trigger" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
 
@@ -42,8 +66,22 @@ jobs:
           echo "HTTP Status: $HTTP_STATUS"
           echo "Response: $BODY"
 
-          if [ "$HTTP_STATUS" -ne 202 ] && [ "$HTTP_STATUS" -ne 200 ]; then
-            echo "Forecast trigger failed with status $HTTP_STATUS"
+          # 200/202: Accepted & dispatched
+          # 409: Ingestion cycle already executing in the background (idempotent success)
+          if [ "$HTTP_STATUS" = "202" ] || [ "$HTTP_STATUS" = "200" ]; then
+            echo "Forecast trigger accepted successfully."
+          elif [ "$HTTP_STATUS" = "409" ]; then
+            echo "Notice: A forecast cycle is already executing in the background (HTTP 409). Handled idempotently."
+          else
+            echo "::error::Forecast trigger failed with status $HTTP_STATUS"
             exit 1
           fi
 
+      - name: Verify Forecast Telemetry
+        if: success()
+        run: |
+          API_URL="${{ secrets.SETU_API_URL || 'https://the-dead-zone.onrender.com' }}"
+          echo "Fetching latest forecast pipeline telemetry..."
+          sleep 10
+          STATUS_RESP=$(curl -s --max-time 15 "$API_URL/alerts/forecast/status" || echo "{}")
+          echo "$STATUS_RESP" | jq . || echo "$STATUS_RESP"

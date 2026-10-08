@@ -39,7 +39,7 @@ def _execute_forecast_background_task(
     dry_run: bool,
 ) -> None:
     """Worker function executed inside FastAPI BackgroundTasks."""
-    global _RUN_IN_PROGRESS
+    global _RUN_IN_PROGRESS, _LAST_RUN_STARTED_AT
     try:
         logger.info(
             f"[Run {run_id}] Background forecast cycle started for {target_districts} (live={live}, dry_run={dry_run})."
@@ -53,6 +53,7 @@ def _execute_forecast_background_task(
         logger.exception(f"[Run {run_id}] Background forecast cycle encountered an unhandled error: {exc}")
     finally:
         _RUN_IN_PROGRESS = False
+        _LAST_RUN_STARTED_AT = None
 
 
 router = APIRouter(prefix="/alerts", tags=["Dynamic Alerts & Forecasts"])
@@ -177,12 +178,13 @@ def trigger_forecast_cycle(
 ) -> ForecastTriggerResponse:
     global _RUN_IN_PROGRESS, _LAST_RUN_STARTED_AT
 
-    # Check and self-heal zombie lock if running for > 10 minutes
+    # Check and self-heal zombie lock if running for > 5 minutes or missing timestamp
     now = datetime.now(timezone.utc)
-    if _RUN_IN_PROGRESS and _LAST_RUN_STARTED_AT:
-        if (now - _LAST_RUN_STARTED_AT).total_seconds() > 600:
-            logger.warning("Resetting stale forecast run lock (exceeded 10 minutes timeout).")
+    if _RUN_IN_PROGRESS:
+        if _LAST_RUN_STARTED_AT is None or (now - _LAST_RUN_STARTED_AT).total_seconds() > 300:
+            logger.warning("Resetting stale forecast run lock (exceeded 5m timeout or missing timestamp).")
             _RUN_IN_PROGRESS = False
+            _LAST_RUN_STARTED_AT = None
 
     if _RUN_IN_PROGRESS:
         raise HTTPException(
