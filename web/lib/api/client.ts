@@ -42,9 +42,32 @@ export class ApiError extends Error {
 }
 
 function buildUrl(path: string, params?: Record<string, string | number | undefined>): string {
+  // If path is already a fully-qualified URL
+  if (/^https?:\/\//i.test(path)) {
+    const url = new URL(path);
+    if (params) {
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== null && value !== '') {
+          url.searchParams.set(key, String(value));
+        }
+      }
+    }
+    return url.toString();
+  }
+
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
   const base = getApiBaseUrl();
-  const url = new URL(`${base}${cleanPath}`);
+
+  let url: URL;
+  if (/^https?:\/\//i.test(base)) {
+    url = new URL(`${base}${cleanPath}`);
+  } else if (typeof window !== 'undefined') {
+    url = new URL(`${base}${cleanPath}`, window.location.origin);
+  } else {
+    // SSR / Node fallback origin for relative base paths
+    url = new URL(`${base}${cleanPath}`, 'http://localhost:3000');
+  }
+
   if (params) {
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined && value !== null && value !== '') {
@@ -120,8 +143,9 @@ export async function apiGet<T>(
     });
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
+    const targetUrl = getApiBaseUrl() || API_BASE_URL;
     throw new ApiError(
-      `Cannot reach the TERRA API at ${API_BASE_URL}. If the service was idle, Render may be waking up (cold start can take ~30-50s). Please wait a moment and retry.`,
+      `Cannot reach the TERRA API at ${targetUrl}. If the service was idle, Render may be waking up (cold start can take ~30-50s). Please wait a moment and retry.`,
       0,
       'NETWORK_ERROR',
     );
@@ -155,8 +179,9 @@ export async function apiPost<T>(
     });
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
+    const targetUrl = getApiBaseUrl() || API_BASE_URL;
     throw new ApiError(
-      `Cannot reach the TERRA API at ${API_BASE_URL}. If the service was idle, Render may be waking up (cold start can take ~30-50s). Please wait a moment and retry.`,
+      `Cannot reach the TERRA API at ${targetUrl}. If the service was idle, Render may be waking up (cold start can take ~30-50s). Please wait a moment and retry.`,
       0,
       'NETWORK_ERROR',
     );
