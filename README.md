@@ -498,7 +498,7 @@ uv run python -m pipeline.jobs.ingest_flood_data path/to/sentinel1.csv          
 ### Checking a run
 
 ```bash
-curl https://the-dead-zone.onrender.com/health/ready            # active serving_version run id
+curl https://the-terra-391294275080.asia-southeast1.run.app/health/ready            # active serving_version run id
 uv run python scripts/verify_b8_full_certification.py            # forecast pipeline certification
 ```
 
