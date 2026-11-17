@@ -35,4 +35,5 @@ RUN uv pip install --system -e ./core -e ./api -e ./pipeline
 
 EXPOSE 8000
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Hosts such as Google Cloud Run inject the port to listen on as $PORT; fall back to 8000 locally.
+CMD ["sh", "-c", "exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

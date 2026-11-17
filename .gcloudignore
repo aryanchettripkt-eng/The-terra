@@ -1,0 +1,24 @@
+# Files left out of the upload when deploying with `gcloud run deploy --source .`
+# Only the Python backend (core/, api/, pipeline/, infra/, scripts/) goes into the image.
+.gcloudignore
+.git
+.gitignore
+.github/
+.agents/
+.impeccable/
+.venv/
+node_modules/
+web/
+docs/
+data/
+models/
+scratch/
+**/__pycache__/
+**/.pytest_cache/
+*.png
+*.svg
+*.jpg
+*.html
+.env
+.env.*
+!.env.example
