@@ -12,7 +12,7 @@ export function getApiBaseUrl(): string {
       return 'http://localhost:8000';
     }
   }
-  return 'https://the-dead-zone.onrender.com';
+  return 'https://the-terra-391294275080.asia-southeast1.run.app';
 }
 
 export const API_BASE_URL =
